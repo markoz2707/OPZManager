@@ -1,0 +1,6 @@
+@OPZManager.API_HostAddress = http://localhost:5062
+
+GET {{OPZManager.API_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

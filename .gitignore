@@ -1,0 +1,33 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.vs/
+*.DotSettings.user
+
+# Node
+node_modules/
+opz-manager-ui/build/
+
+# IDE
+.idea/
+.vscode/
+
+# Claude Code
+.claude/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Uploads & generated files
+uploads/
+Documents/
+OPZ/
+
+# Legacy / temp
+input/
+output/
+app.py
+task-desc-*.txt
