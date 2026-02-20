@@ -131,14 +131,42 @@ export interface TrainingData {
   createdAt: string;
 }
 
+export interface KnowledgeDocument {
+  id: number;
+  equipmentModelId: number;
+  originalFilename: string;
+  fileSizeBytes: number;
+  status: string;
+  errorMessage: string | null;
+  chunkCount: number;
+  uploadedAt: string;
+  indexedAt: string | null;
+}
+
+export interface KnowledgeSearchResult {
+  chunkId: number;
+  documentId: number;
+  documentFilename: string;
+  content: string;
+  score: number;
+  chunkIndex: number;
+}
+
 export interface ConfigStatus {
   llmConnected: boolean;
   llmBaseUrl: string;
+  llmProvider: string;
+  llmModelName: string;
   manufacturersCount: number;
   equipmentTypesCount: number;
   equipmentModelsCount: number;
   opzDocumentsCount: number;
   trainingDataCount: number;
+  embeddingConnected: boolean;
+  embeddingProvider: string;
+  embeddingModelName: string;
+  knowledgeDocumentsCount: number;
+  knowledgeChunksCount: number;
 }
 
 export interface PaginatedResponse<T> {
@@ -293,6 +321,34 @@ export const trainingDataAPI = {
   },
 };
 
+// ─── Knowledge Base API ──────────────────────────────────
+
+export const knowledgeBaseAPI = {
+  getDocuments: async (modelId: number): Promise<KnowledgeDocument[]> => {
+    const response = await api.get(`/equipment/models/${modelId}/knowledge`);
+    return response.data;
+  },
+  uploadDocument: async (modelId: number, file: File): Promise<KnowledgeDocument> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await api.post(`/equipment/models/${modelId}/knowledge/upload`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+  deleteDocument: async (modelId: number, docId: number): Promise<void> => {
+    await api.delete(`/equipment/models/${modelId}/knowledge/${docId}`);
+  },
+  reprocessDocument: async (modelId: number, docId: number): Promise<{ message: string }> => {
+    const response = await api.post(`/equipment/models/${modelId}/knowledge/${docId}/reprocess`);
+    return response.data;
+  },
+  search: async (modelId: number, query: string, topK: number = 5): Promise<KnowledgeSearchResult[]> => {
+    const response = await api.post(`/equipment/models/${modelId}/knowledge/search`, { query, topK });
+    return response.data;
+  },
+};
+
 // ─── Config API ──────────────────────────────────────────
 
 export const configAPI = {
@@ -302,6 +358,10 @@ export const configAPI = {
   },
   testLlm: async (): Promise<{ connected: boolean; baseUrl: string; message: string }> => {
     const response = await api.get('/config/llm/test');
+    return response.data;
+  },
+  testEmbedding: async (): Promise<{ connected: boolean; provider: string; modelName: string; dimensions: number; message: string }> => {
+    const response = await api.get('/config/embedding/test');
     return response.data;
   },
 };

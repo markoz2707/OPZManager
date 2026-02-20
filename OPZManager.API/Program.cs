@@ -9,6 +9,8 @@ using FluentValidation.AspNetCore;
 using OPZManager.API.Data;
 using OPZManager.API.Middleware;
 using OPZManager.API.Services;
+using OPZManager.API.Services.Embeddings;
+using OPZManager.API.Services.LLM;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -19,9 +21,10 @@ builder.Services.AddControllers()
         options.JsonSerializerOptions.ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
     });
 
-// Configure Entity Framework with PostgreSQL
+// Configure Entity Framework with PostgreSQL + pgvector
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"),
+        o => o.UseVector()));
 
 // Configure JWT Authentication
 var jwtSettings = builder.Configuration.GetSection("JwtSettings");
@@ -81,12 +84,41 @@ builder.Services.AddScoped<IOPZVerificationService, OPZVerificationService>();
 builder.Services.AddScoped<ILeadCaptureService, LeadCaptureService>();
 builder.Services.AddScoped<PythonPdfProcessingService>();
 
-// Configure HTTP Client for Pllum API
-builder.Services.AddHttpClient("PllumAPI", client =>
+// Configure LLM Provider based on settings
+var llmProvider = builder.Configuration["LlmSettings:Provider"] ?? "local";
+switch (llmProvider.ToLower())
 {
-    client.BaseAddress = new Uri(builder.Configuration["PllumAPI:BaseUrl"] ?? "http://localhost:1234/v1/");
-    client.DefaultRequestHeaders.Add("Accept", "application/json");
-});
+    case "gemini":
+        builder.Services.AddHttpClient<ILlmProvider, GeminiProvider>();
+        break;
+    case "anthropic":
+        builder.Services.AddHttpClient<ILlmProvider, AnthropicProvider>();
+        break;
+    default: // "local"
+        builder.Services.AddHttpClient<ILlmProvider, LocalPllumProvider>(client =>
+        {
+            client.BaseAddress = new Uri(builder.Configuration["LlmSettings:Local:BaseUrl"]
+                ?? builder.Configuration["PllumAPI:BaseUrl"]
+                ?? "http://localhost:1234/v1/");
+            client.DefaultRequestHeaders.Add("Accept", "application/json");
+        });
+        break;
+}
+
+// Configure Embedding Provider based on settings
+var embeddingProvider = builder.Configuration["EmbeddingSettings:Provider"] ?? "openai-compatible";
+switch (embeddingProvider.ToLower())
+{
+    case "gemini":
+        builder.Services.AddHttpClient<IEmbeddingProvider, GeminiEmbeddingProvider>();
+        break;
+    default: // "openai-compatible"
+        builder.Services.AddHttpClient<IEmbeddingProvider, OpenAICompatibleEmbeddingProvider>();
+        break;
+}
+
+// Register Knowledge Base service
+builder.Services.AddScoped<IKnowledgeBaseService, KnowledgeBaseService>();
 
 // Rate Limiting
 builder.Services.AddRateLimiter(options =>

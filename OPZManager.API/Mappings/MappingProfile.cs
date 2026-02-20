@@ -4,6 +4,8 @@ using OPZManager.API.DTOs.Auth;
 using OPZManager.API.DTOs.Equipment;
 using OPZManager.API.DTOs.OPZ;
 using OPZManager.API.DTOs.Admin;
+using OPZManager.API.DTOs.KnowledgeBase;
+using OPZManager.API.Services;
 using OPZManager.API.DTOs.Public;
 
 namespace OPZManager.API.Mappings
@@ -49,6 +51,10 @@ namespace OPZManager.API.Mappings
             // TrainingData mappings
             CreateMap<TrainingData, TrainingDataDto>();
             CreateMap<CreateTrainingDataDto, TrainingData>();
+
+            // KnowledgeDocument mappings
+            CreateMap<KnowledgeDocument, KnowledgeDocumentDto>();
+            CreateMap<KnowledgeSearchResult, KnowledgeSearchResultDto>();
 
             // Public OPZ Document mapping
             CreateMap<OPZDocument, PublicOPZDocumentDto>()
