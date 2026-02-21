@@ -99,7 +99,14 @@ export interface OPZRequirement {
   requirementText: string;
   requirementType: string;
   extractedSpecsJson: string;
+  deviceCategory: string;
   createdAt: string;
+}
+
+export interface RequirementCompliance {
+  requirementId: number;
+  status: 'met' | 'partial' | 'not_met' | 'not_applicable';
+  explanation: string | null;
 }
 
 export interface EquipmentMatch {
@@ -110,6 +117,7 @@ export interface EquipmentMatch {
   typeName: string;
   matchScore: number;
   complianceDescription: string;
+  requirementCompliances: RequirementCompliance[];
   createdAt: string;
 }
 

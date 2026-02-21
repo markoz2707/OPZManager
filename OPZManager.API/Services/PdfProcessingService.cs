@@ -18,11 +18,13 @@ namespace OPZManager.API.Services
     {
         private readonly ApplicationDbContext _context;
         private readonly IPllumIntegrationService _pllumService;
+        private readonly ILogger<PdfProcessingService> _logger;
 
-        public PdfProcessingService(ApplicationDbContext context, IPllumIntegrationService pllumService)
+        public PdfProcessingService(ApplicationDbContext context, IPllumIntegrationService pllumService, ILogger<PdfProcessingService> logger)
         {
             _context = context;
             _pllumService = pllumService;
+            _logger = logger;
         }
 
         public async Task<string> ExtractTextFromPdfAsync(string filePath)
@@ -87,39 +89,42 @@ namespace OPZManager.API.Services
             // Try LLM structured extraction first
             try
             {
+                _logger.LogInformation("Attempting LLM structured requirement extraction for {Length} chars of PDF text", pdfText.Length);
                 var llmRequirements = await _pllumService.ExtractStructuredRequirementsAsync(pdfText);
                 if (llmRequirements.Count >= 2)
                 {
-                    return llmRequirements.Select(r => new OPZRequirement
+                    _logger.LogInformation("LLM extracted {Count} structured requirements, using LLM results", llmRequirements.Count);
+                    return llmRequirements.Select(r =>
                     {
-                        RequirementText = r.Requirement.Length > 2000 ? r.Requirement[..2000] : r.Requirement,
-                        RequirementType = r.Category,
-                        ExtractedSpecsJson = JsonSerializer.Serialize(r.Specs)
+                        // Include device name in requirement text for context
+                        var text = !string.IsNullOrWhiteSpace(r.Device) && r.Device != "Ogólne"
+                            ? $"[{r.Device}] {r.Requirement}"
+                            : r.Requirement;
+
+                        // Include device in specs JSON
+                        var specsDict = r.Specs ?? new Dictionary<string, string>();
+                        if (!string.IsNullOrWhiteSpace(r.Device))
+                            specsDict["_device"] = r.Device;
+
+                        return new OPZRequirement
+                        {
+                            RequirementText = text.Length > 2000 ? text[..2000] : text,
+                            RequirementType = r.Category,
+                            ExtractedSpecsJson = JsonSerializer.Serialize(specsDict)
+                        };
                     }).ToList();
                 }
+                _logger.LogWarning("LLM returned only {Count} requirements, falling back to rule-based", llmRequirements.Count);
             }
-            catch
+            catch (Exception ex)
             {
-                // LLM failed, fall through to rule-based
+                _logger.LogWarning(ex, "LLM extraction failed, falling back to rule-based");
             }
 
             // Fallback: rule-based extraction
+            _logger.LogInformation("Using rule-based requirement extraction");
             var requirements = ExtractRequirementsFromText(pdfText);
-
-            // If rule-based found very few, try legacy AI enrichment
-            if (requirements.Count < 3)
-            {
-                try
-                {
-                    var aiRequirements = await ExtractRequirementsWithAIAsync(pdfText);
-                    if (aiRequirements.Count > requirements.Count)
-                        requirements = aiRequirements;
-                }
-                catch
-                {
-                    // AI failed, keep rule-based results
-                }
-            }
+            _logger.LogInformation("Rule-based extracted {Count} requirements", requirements.Count);
 
             return requirements;
         }
@@ -194,6 +199,7 @@ namespace OPZManager.API.Services
 
         /// <summary>
         /// Rule-based requirement extraction from Polish OPZ text.
+        /// Groups consecutive related lines into consolidated requirements.
         /// </summary>
         private List<OPZRequirement> ExtractRequirementsFromText(string pdfText)
         {
@@ -214,43 +220,101 @@ namespace OPZManager.API.Services
                 "interfejs", "port", "złącze", "slot"
             };
 
-            var specPattern = new Regex(
-                @"^[\s]*(?:[a-złćśżźńóę]\)|[0-9]+[\.\)])\s+",
+            // Detect numbered rows like "1. ", "2. ", "LP " — these are table row boundaries
+            var numberedRowPattern = new Regex(
+                @"^[\s]*(\d+)\.\s+",
                 RegexOptions.IgnoreCase);
 
             var currentSection = "General";
+            var currentGroupLines = new List<string>();
+            var currentGroupSection = "General";
+
+            void FlushGroup()
+            {
+                if (currentGroupLines.Count == 0) return;
+                var fullText = string.Join(" ", currentGroupLines).Trim();
+                // Only create a requirement if the consolidated text is meaningful
+                if (fullText.Length >= 30)
+                {
+                    requirements.Add(new OPZRequirement
+                    {
+                        RequirementText = fullText.Length > 2000 ? fullText[..2000] : fullText,
+                        RequirementType = currentGroupSection,
+                        ExtractedSpecsJson = "{}"
+                    });
+                }
+                currentGroupLines.Clear();
+            }
 
             foreach (var line in lines)
             {
                 var trimmed = line.Trim();
-                if (string.IsNullOrWhiteSpace(trimmed) || trimmed.Length < 15)
+                if (string.IsNullOrWhiteSpace(trimmed) || trimmed.Length < 10)
+                {
+                    // Empty/short line = group boundary
+                    FlushGroup();
                     continue;
+                }
 
                 var lower = trimmed.ToLower();
 
                 // Detect section context
-                if (lower.Contains("wymagania techniczne") || lower.Contains("specyfikacja techniczna") || lower.Contains("parametry techniczne"))
+                if (lower.Contains("wymagania techniczne") || lower.Contains("specyfikacja techniczna") || lower.Contains("parametry techniczne") || lower.Contains("wymagania minimalne"))
+                {
+                    FlushGroup();
                     currentSection = "Technical";
+                    continue; // Skip section header itself
+                }
                 else if (lower.Contains("wydajność") || lower.Contains("parametry wydajnościowe"))
+                {
+                    FlushGroup();
                     currentSection = "Performance";
+                    continue;
+                }
                 else if (lower.Contains("zgodność") || lower.Contains("certyfikat") || lower.Contains("normy"))
+                {
+                    FlushGroup();
                     currentSection = "Compliance";
-                else if (lower.Contains("gwarancj") || lower.Contains("serwis") || lower.Contains("dostaw"))
+                }
+                else if (lower.Contains("gwarancj") || lower.Contains("serwis"))
+                {
+                    FlushGroup();
                     currentSection = "General";
+                }
+
+                // Check if this is a new numbered row (table boundary)
+                if (numberedRowPattern.IsMatch(trimmed))
+                {
+                    FlushGroup();
+                    currentGroupSection = currentSection;
+                }
 
                 var isRequirement = requirementKeywords.Any(kw => lower.Contains(kw));
-                var isSpecLine = specPattern.IsMatch(trimmed) && trimmed.Length > 20;
+                // Bullet point lines (starting with -, *, •) are continuations
+                var isBullet = trimmed.StartsWith("-") || trimmed.StartsWith("*") || trimmed.StartsWith("•") || trimmed.StartsWith("\u2013") || trimmed.StartsWith("\u2022");
 
-                if (isRequirement || isSpecLine)
+                if (isRequirement || isBullet)
                 {
-                    requirements.Add(new OPZRequirement
+                    if (currentGroupLines.Count == 0)
+                        currentGroupSection = currentSection;
+                    currentGroupLines.Add(trimmed);
+                }
+                else if (currentGroupLines.Count > 0)
+                {
+                    // Continue accumulating if this looks like a continuation (no period at end of last line, or starts lowercase)
+                    var lastLine = currentGroupLines.Last();
+                    if (!lastLine.EndsWith(".") || char.IsLower(trimmed[0]))
                     {
-                        RequirementText = trimmed.Length > 2000 ? trimmed[..2000] : trimmed,
-                        RequirementType = currentSection,
-                        ExtractedSpecsJson = "{}"
-                    });
+                        currentGroupLines.Add(trimmed);
+                    }
+                    else
+                    {
+                        FlushGroup();
+                    }
                 }
             }
+
+            FlushGroup();
 
             return requirements;
         }

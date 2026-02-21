@@ -6,6 +6,7 @@ namespace OPZManager.API.Services
     {
         public string Category { get; set; } = "General";
         public string Requirement { get; set; } = string.Empty;
+        public string Device { get; set; } = string.Empty;
         public Dictionary<string, string> Specs { get; set; } = new();
     }
 
@@ -13,6 +14,27 @@ namespace OPZManager.API.Services
     {
         public int Score { get; set; }
         public string Explanation { get; set; } = string.Empty;
+    }
+
+    public class LlmRequirementInput
+    {
+        public int RequirementId { get; set; }
+        public string Device { get; set; } = string.Empty;
+        public string RequirementText { get; set; } = string.Empty;
+    }
+
+    public class LlmRequirementCompliance
+    {
+        public int RequirementId { get; set; }
+        public string Status { get; set; } = "not_applicable"; // met, partial, not_met, not_applicable
+        public string Explanation { get; set; } = string.Empty;
+    }
+
+    public class LlmDetailedMatchResult
+    {
+        public int OverallScore { get; set; }
+        public string OverallExplanation { get; set; } = string.Empty;
+        public List<LlmRequirementCompliance> Requirements { get; set; } = new();
     }
 
     public interface IPllumIntegrationService
@@ -26,5 +48,6 @@ namespace OPZManager.API.Services
         Task<List<LlmExtractedRequirement>> ExtractStructuredRequirementsAsync(string pdfText);
         Task<Dictionary<string, string>> ExtractEquipmentSpecsAsync(string documentText);
         Task<LlmEquipmentMatchScore> ScoreEquipmentMatchAsync(string requirements, string equipmentSpecs, string kbFragments);
+        Task<LlmDetailedMatchResult> ScoreEquipmentMatchDetailedAsync(List<LlmRequirementInput> requirements, string equipmentSpecs, string kbFragments);
     }
 }

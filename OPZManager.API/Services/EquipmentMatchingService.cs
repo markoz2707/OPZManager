@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using OPZManager.API.Data;
 using OPZManager.API.Models;
@@ -25,34 +26,41 @@ namespace OPZManager.API.Services
 
         public async Task<List<EquipmentMatch>> FindMatchingEquipmentAsync(OPZDocument opzDocument)
         {
-            var matches = new List<EquipmentMatch>();
-
             // Get OPZ requirements
             var requirements = await _context.OPZRequirements
                 .Where(r => r.OPZId == opzDocument.Id)
                 .ToListAsync();
 
             if (!requirements.Any())
-                return matches;
+                return new List<EquipmentMatch>();
+
+            // Cleanup old matches (cascade deletes RequirementCompliances)
+            var oldMatches = await _context.EquipmentMatches
+                .Where(m => m.OPZId == opzDocument.Id)
+                .ToListAsync();
+            if (oldMatches.Any())
+            {
+                _context.EquipmentMatches.RemoveRange(oldMatches);
+                await _context.SaveChangesAsync();
+            }
+
+            // Build requirement inputs with device parsed from [brackets]
+            var requirementInputs = requirements.Select(r => new LlmRequirementInput
+            {
+                RequirementId = r.Id,
+                Device = ParseDeviceFromRequirement(r.RequirementText),
+                RequirementText = r.RequirementText
+            }).ToList();
 
             var requirementsText = string.Join("\n", requirements.Select(r => r.RequirementText));
 
-            // Detect equipment type from requirements to pre-filter
-            var detectedTypeId = await DetectEquipmentTypeAsync(requirements);
-
-            // Get equipment models (filtered by type if detected)
-            var equipmentQuery = _context.EquipmentModels
+            // Get ALL equipment models (no type pre-filter — OPZ describes multiple device types)
+            var allEquipment = await _context.EquipmentModels
                 .Include(e => e.Manufacturer)
                 .Include(e => e.Type)
-                .AsQueryable();
+                .ToListAsync();
 
-            if (detectedTypeId.HasValue)
-            {
-                equipmentQuery = equipmentQuery.Where(e => e.TypeId == detectedTypeId.Value);
-                _logger.LogInformation("Pre-filtered equipment to typeId={TypeId}", detectedTypeId.Value);
-            }
-
-            var allEquipment = await equipmentQuery.ToListAsync();
+            var matches = new List<EquipmentMatch>();
 
             foreach (var equipment in allEquipment)
             {
@@ -73,23 +81,54 @@ namespace OPZManager.API.Services
                         ? string.Join("\n---\n", kbFragments.Select(f => f.Content))
                         : "Brak dodatkowej dokumentacji w bazie wiedzy.";
 
-                    // LLM scoring
-                    var llmScore = await _pllumService.ScoreEquipmentMatchAsync(
-                        requirementsText,
-                        $"{equipment.Manufacturer.Name} {equipment.ModelName}\nSpecyfikacja: {equipment.SpecificationsJson}",
+                    // LLM detailed scoring — one call per equipment, all requirements at once
+                    var detailedResult = await _pllumService.ScoreEquipmentMatchDetailedAsync(
+                        requirementInputs,
+                        $"{equipment.Manufacturer.Name} {equipment.ModelName} ({equipment.Type.Name})\nSpecyfikacja: {equipment.SpecificationsJson}",
                         kbText);
 
-                    var normalizedScore = Math.Clamp(llmScore.Score / 100.0m, 0m, 1m);
+                    // Calculate overall score from per-requirement results
+                    var applicableReqs = detailedResult.Requirements
+                        .Where(r => r.Status != "not_applicable")
+                        .ToList();
 
-                    if (normalizedScore > 0.2m) // Include matches with LLM score > 20%
+                    decimal normalizedScore;
+                    if (applicableReqs.Count > 0)
                     {
-                        matches.Add(new EquipmentMatch
+                        var sum = applicableReqs.Sum(r => r.Status switch
+                        {
+                            "met" => 1.0m,
+                            "partial" => 0.5m,
+                            _ => 0.0m
+                        });
+                        normalizedScore = sum / applicableReqs.Count;
+                    }
+                    else
+                    {
+                        // No applicable requirements — use LLM overall score as fallback
+                        normalizedScore = Math.Clamp(detailedResult.OverallScore / 100.0m, 0m, 1m);
+                    }
+
+                    if (normalizedScore > 0.1m) // Include matches with score > 10%
+                    {
+                        var match = new EquipmentMatch
                         {
                             OPZId = opzDocument.Id,
                             ModelId = equipment.Id,
                             MatchScore = normalizedScore,
-                            ComplianceDescription = llmScore.Explanation
-                        });
+                            ComplianceDescription = detailedResult.OverallExplanation
+                        };
+
+                        matches.Add(match);
+
+                        // Build RequirementCompliance entities (will be saved after match gets Id)
+                        match.RequirementCompliances = detailedResult.Requirements
+                            .Select(r => new RequirementCompliance
+                            {
+                                RequirementId = r.RequirementId,
+                                Status = r.Status,
+                                Explanation = r.Status == "met" ? null : r.Explanation
+                            }).ToList();
                     }
                 }
                 catch (Exception ex)
@@ -98,14 +137,24 @@ namespace OPZManager.API.Services
                 }
             }
 
-            // Sort by match score descending
-            matches = matches.OrderByDescending(m => m.MatchScore).ToList();
+            // Sort by match score descending and take top 5
+            matches = matches.OrderByDescending(m => m.MatchScore).Take(5).ToList();
 
-            // Save matches to database
+            // Save matches + compliances to database
             _context.EquipmentMatches.AddRange(matches);
             await _context.SaveChangesAsync();
 
             return matches;
+        }
+
+        /// <summary>
+        /// Parses device name from requirement text prefix like "[Serwer rack]" or "[Macierz dyskowa]".
+        /// Returns "Ogólne" if no bracket prefix found.
+        /// </summary>
+        private static string ParseDeviceFromRequirement(string requirementText)
+        {
+            var match = Regex.Match(requirementText, @"^\[([^\]]+)\]");
+            return match.Success ? match.Groups[1].Value : "Ogólne";
         }
 
         public async Task<decimal> CalculateMatchScoreAsync(EquipmentModel equipment, List<OPZRequirement> requirements)
@@ -145,39 +194,6 @@ namespace OPZManager.API.Services
                 }
                 return totalScore / requirements.Count;
             }
-        }
-
-        private async Task<int?> DetectEquipmentTypeAsync(List<OPZRequirement> requirements)
-        {
-            var allText = string.Join(" ", requirements.Select(r => r.RequirementText)).ToLower();
-            var types = await _context.EquipmentTypes.ToListAsync();
-
-            // Simple keyword detection for equipment type
-            foreach (var type in types)
-            {
-                var typeName = type.Name.ToLower();
-                if (allText.Contains(typeName))
-                    return type.Id;
-            }
-
-            // Check common keywords
-            if (allText.Contains("serwer") || allText.Contains("procesor") || allText.Contains("cpu"))
-            {
-                var serverType = types.FirstOrDefault(t => t.Name.ToLower().Contains("serwer"));
-                if (serverType != null) return serverType.Id;
-            }
-            if (allText.Contains("macierz") || allText.Contains("storage") || allText.Contains("raid"))
-            {
-                var storageType = types.FirstOrDefault(t => t.Name.ToLower().Contains("macierz"));
-                if (storageType != null) return storageType.Id;
-            }
-            if (allText.Contains("przełącznik") || allText.Contains("switch") || allText.Contains("sieciow"))
-            {
-                var networkType = types.FirstOrDefault(t => t.Name.ToLower().Contains("przełącznik"));
-                if (networkType != null) return networkType.Id;
-            }
-
-            return null; // No type detected, search all equipment
         }
 
         public async Task<List<EquipmentModel>> GetEquipmentByManufacturerAsync(int manufacturerId)
@@ -374,7 +390,7 @@ namespace OPZManager.API.Services
 
             // Check for common technical specifications
             var technicalTerms = new[] { "ram", "memory", "storage", "cpu", "processor", "disk", "ssd", "hdd", "raid" };
-            
+
             foreach (var term in technicalTerms)
             {
                 if (requirementText.Contains(term))
@@ -397,7 +413,7 @@ namespace OPZManager.API.Services
 
             // Check for performance-related terms
             var performanceTerms = new[] { "speed", "throughput", "iops", "bandwidth", "latency", "performance" };
-            
+
             foreach (var term in performanceTerms)
             {
                 if (requirementText.Contains(term))

@@ -95,6 +95,8 @@ namespace OPZManager.API.Controllers
             var document = await _context.OPZDocuments
                 .Include(d => d.OPZRequirements)
                 .Include(d => d.EquipmentMatches)
+                    .ThenInclude(m => m.RequirementCompliances)
+                .Include(d => d.EquipmentMatches)
                     .ThenInclude(m => m.EquipmentModel)
                         .ThenInclude(e => e.Manufacturer)
                 .Include(d => d.EquipmentMatches)
@@ -147,6 +149,7 @@ namespace OPZManager.API.Controllers
         public async Task<ActionResult<List<EquipmentMatchDto>>> GetOPZMatches(int id)
         {
             var matches = await _context.EquipmentMatches
+                .Include(m => m.RequirementCompliances)
                 .Include(m => m.EquipmentModel)
                     .ThenInclude(m => m.Manufacturer)
                 .Include(m => m.EquipmentModel)

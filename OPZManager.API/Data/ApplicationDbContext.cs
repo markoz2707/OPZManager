@@ -25,6 +25,7 @@ namespace OPZManager.API.Data
         public DbSet<LeadCapture> LeadCaptures { get; set; }
         public DbSet<KnowledgeDocument> KnowledgeDocuments { get; set; }
         public DbSet<KnowledgeChunk> KnowledgeChunks { get; set; }
+        public DbSet<RequirementCompliance> RequirementCompliances { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -204,6 +205,21 @@ namespace OPZManager.API.Data
                     .OnDelete(DeleteBehavior.Cascade);
                 entity.Property(e => e.Embedding)
                     .HasColumnType("vector(1024)");
+            });
+
+            // RequirementCompliance configuration
+            modelBuilder.Entity<RequirementCompliance>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => new { e.EquipmentMatchId, e.RequirementId }).IsUnique();
+                entity.HasOne(e => e.EquipmentMatch)
+                    .WithMany(e => e.RequirementCompliances)
+                    .HasForeignKey(e => e.EquipmentMatchId)
+                    .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.OPZRequirement)
+                    .WithMany()
+                    .HasForeignKey(e => e.RequirementId)
+                    .OnDelete(DeleteBehavior.Cascade);
             });
 
             // Seed data

@@ -22,5 +22,6 @@ namespace OPZManager.API.Models
         // Navigation properties
         public virtual OPZDocument OPZDocument { get; set; } = null!;
         public virtual EquipmentModel EquipmentModel { get; set; } = null!;
+        public virtual ICollection<RequirementCompliance> RequirementCompliances { get; set; } = new List<RequirementCompliance>();
     }
 }

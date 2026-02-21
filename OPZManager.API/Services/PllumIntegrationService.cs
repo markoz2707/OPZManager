@@ -26,6 +26,27 @@ namespace OPZManager.API.Services
         }
 
         /// <summary>
+        /// Strips markdown code block wrappers (```json ... ```) from LLM responses.
+        /// </summary>
+        private static string StripMarkdownCodeBlock(string response)
+        {
+            if (string.IsNullOrWhiteSpace(response))
+                return response;
+
+            var stripped = response.Trim();
+            // Remove ```json or ``` prefix
+            var codeBlockMatch = Regex.Match(stripped, @"^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```\s*$");
+            if (codeBlockMatch.Success)
+                return codeBlockMatch.Groups[1].Value.Trim();
+
+            // Also handle case where ``` is on a line by itself
+            stripped = Regex.Replace(stripped, @"^```(?:json)?\s*\n", "", RegexOptions.Multiline);
+            stripped = Regex.Replace(stripped, @"\n\s*```\s*$", "", RegexOptions.Multiline);
+
+            return stripped.Trim();
+        }
+
+        /// <summary>
         /// Sanitizes user-provided content before embedding it in LLM prompts
         /// to mitigate prompt injection attacks.
         /// </summary>
@@ -48,7 +69,7 @@ namespace OPZManager.API.Services
                 "[filtered]", RegexOptions.IgnoreCase);
 
             // Truncate excessively long input to prevent token-stuffing attacks
-            const int maxLength = 50_000;
+            const int maxLength = 500_000;
             if (sanitized.Length > maxLength)
             {
                 sanitized = sanitized[..maxLength];
@@ -262,45 +283,109 @@ Odpowiedz w języku polskim, podając konkretne uwagi i rekomendacje.
             try
             {
                 var sanitizedText = SanitizeUserContent(pdfText);
-                // Truncate to ~30000 chars for token limit
-                if (sanitizedText.Length > 30000)
-                    sanitizedText = sanitizedText[..30000];
 
-                var prompt = $@"Przeanalizuj poniższy dokument OPZ (Opis Przedmiotu Zamówienia) i wyodrębnij z niego konkretne wymagania techniczne.
+                _logger.LogInformation("ExtractStructuredRequirements: document length = {Length} chars", sanitizedText.Length);
 
-Dla każdego wymagania określ:
-- category: typ wymagania (Technical, Performance, Compliance, General)
-- requirement: treść wymagania w formie zwięzłego zdania
-- specs: słownik wyodrębnionych parametrów technicznych (klucz: wartość), np. {{""CPU"": ""min. 2x 12-core"", ""RAM"": ""min. 64GB""}}
+                // For very large documents, use chunked extraction
+                const int chunkThreshold = 120_000;
+                if (sanitizedText.Length > chunkThreshold)
+                {
+                    _logger.LogInformation("Document exceeds {Threshold} chars, using chunked extraction", chunkThreshold);
+                    return await ExtractRequirementsChunkedAsync(sanitizedText);
+                }
 
-Zwróć TYLKO tablicę JSON, bez żadnego dodatkowego tekstu. Format:
-[
-  {{""category"": ""Technical"", ""requirement"": ""Serwer musi posiadać min. 2 procesory..."", ""specs"": {{""CPU"": ""min. 2x 12-core"", ""RAM"": ""min. 64GB""}}}},
-  {{""category"": ""Performance"", ""requirement"": ""Wydajność IOPS min. 100000..."", ""specs"": {{""IOPS"": ""min. 100000""}}}}
-]
-
-Ignoruj nagłówki, stopki, numery stron i treści niezwiązane z wymaganiami technicznymi.
-
----BEGIN USER CONTENT---
-{sanitizedText}
----END USER CONTENT---";
-
-                var response = await _llmProvider.SendChatAsync(SystemPrompt, prompt);
-
-                // Extract JSON array from response (LLM may wrap it in markdown code blocks)
-                var jsonMatch = Regex.Match(response, @"\[[\s\S]*\]");
-                if (!jsonMatch.Success)
-                    return new List<LlmExtractedRequirement>();
-
-                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                var result = JsonSerializer.Deserialize<List<LlmExtractedRequirement>>(jsonMatch.Value, options);
-                return result ?? new List<LlmExtractedRequirement>();
+                return await ExtractRequirementsFromTextBlockAsync(sanitizedText);
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "LLM structured requirement extraction failed, will use fallback");
                 return new List<LlmExtractedRequirement>();
             }
+        }
+
+        private async Task<List<LlmExtractedRequirement>> ExtractRequirementsFromTextBlockAsync(string text)
+        {
+            var prompt = $@"Przeanalizuj poniższy dokument OPZ (Opis Przedmiotu Zamówienia) i wyodrębnij z niego KOMPLETNĄ listę wymagań.
+
+WAŻNE ZASADY:
+- Dokument OPZ może opisywać WIELE urządzeń i/lub oprogramowania (np. serwery, macierze, przełączniki, UPS-y, oprogramowanie). Wyodrębnij wymagania dla KAŻDEGO z nich.
+- Pole ""device"" — nazwa urządzenia/oprogramowania, którego dotyczy wymaganie (np. ""Serwer rack"", ""Macierz dyskowa"", ""Przełącznik sieciowy"", ""UPS"", ""System backupu"", ""Ogólne"").
+- Każdy element tablicy JSON to JEDNO skonsolidowane wymaganie dotyczące konkretnego komponentu lub obszaru danego urządzenia (np. ""Procesory"", ""Pamięć RAM"", ""Dyski"", ""Sieć"", ""Zasilanie"", ""Obudowa"", ""Gwarancja"", ""Certyfikaty"").
+- NIE pomijaj żadnych wymagań z dokumentu. Wyodrębnij WSZYSTKIE, łącznie z wymaganiami dot. gwarancji, serwisu, dostaw, certyfikatów, szkoleń.
+- NIE twórz osobnego wymagania dla każdej linii dokumentu. ŁĄCZ powiązane punkty dotyczące tego samego komponentu w jedno wymaganie.
+- Wymaganie powinno być pełnym, spójnym opisem — nie fragmentem zdania.
+- Kategorie: Technical (parametry sprzętowe), Performance (wydajność, benchmarki), Compliance (certyfikaty, normy, zgodność), General (gwarancja, dostawa, serwis, szkolenia, inne).
+
+Dla każdego wymagania podaj:
+- device: nazwa urządzenia/oprogramowania
+- category: jedna z kategorii powyżej
+- requirement: pełny opis wymagania (1-3 zdania) zachowujący KONKRETNE wartości liczbowe z dokumentu
+- specs: słownik wyodrębnionych parametrów (klucz: wartość) — puste {{}} jeśli brak konkretnych parametrów
+
+Zwróć TYLKO tablicę JSON, bez żadnego tekstu przed ani po:
+[
+  {{""device"": ""Serwer rack"", ""category"": ""Technical"", ""requirement"": ""Serwer musi posiadać min. 2 procesory 16-rdzeniowe o częstotliwości min. 2.8 GHz."", ""specs"": {{""CPU"": ""min. 2x 16-core, 2.8GHz""}}}},
+  {{""device"": ""Serwer rack"", ""category"": ""Technical"", ""requirement"": ""Zainstalowane 768 GB pamięci RAM DDR5 RDIMM."", ""specs"": {{""RAM"": ""768GB DDR5 RDIMM""}}}},
+  {{""device"": ""Macierz dyskowa"", ""category"": ""Technical"", ""requirement"": ""Macierz musi obsługiwać min. 24 dyski SAS/NL-SAS/SSD w formatach 2.5 i 3.5 cala."", ""specs"": {{""Dyski"": ""min. 24x SAS/NL-SAS/SSD 2.5/3.5""}}}},
+  {{""device"": ""Ogólne"", ""category"": ""General"", ""requirement"": ""Gwarancja min. 60 miesięcy z czasem reakcji NBD."", ""specs"": {{""Gwarancja"": ""60 miesięcy, NBD""}}}}
+]
+
+---BEGIN DOCUMENT OPZ---
+{text}
+---END DOCUMENT OPZ---";
+
+            var response = await _llmProvider.SendChatAsync(SystemPrompt, prompt, maxTokens: 16384, temperature: 0.3);
+
+            _logger.LogInformation("LLM ExtractStructuredRequirements response length: {Length} chars", response.Length);
+
+            // Strip markdown code blocks if present
+            var cleaned = StripMarkdownCodeBlock(response);
+
+            // Extract JSON array from response
+            var jsonMatch = Regex.Match(cleaned, @"\[[\s\S]*\]");
+            if (!jsonMatch.Success)
+            {
+                _logger.LogWarning("LLM response did not contain JSON array. First 500 chars: {Response}", cleaned.Length > 500 ? cleaned[..500] : cleaned);
+                return new List<LlmExtractedRequirement>();
+            }
+
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            var result = JsonSerializer.Deserialize<List<LlmExtractedRequirement>>(jsonMatch.Value, options);
+            _logger.LogInformation("LLM extracted {Count} structured requirements", result?.Count ?? 0);
+            return result ?? new List<LlmExtractedRequirement>();
+        }
+
+        /// <summary>
+        /// For very large documents, split into overlapping chunks and extract requirements from each.
+        /// </summary>
+        private async Task<List<LlmExtractedRequirement>> ExtractRequirementsChunkedAsync(string fullText)
+        {
+            const int chunkSize = 100_000;
+            const int overlap = 5_000;
+            var allRequirements = new List<LlmExtractedRequirement>();
+            var chunkIndex = 0;
+
+            for (int start = 0; start < fullText.Length; start += chunkSize - overlap)
+            {
+                var end = Math.Min(start + chunkSize, fullText.Length);
+                var chunk = fullText[start..end];
+                chunkIndex++;
+
+                _logger.LogInformation("Processing chunk {Index}: chars {Start}-{End} of {Total}",
+                    chunkIndex, start, end, fullText.Length);
+
+                var chunkRequirements = await ExtractRequirementsFromTextBlockAsync(chunk);
+                allRequirements.AddRange(chunkRequirements);
+
+                _logger.LogInformation("Chunk {Index} produced {Count} requirements", chunkIndex, chunkRequirements.Count);
+
+                if (end >= fullText.Length) break;
+            }
+
+            _logger.LogInformation("Chunked extraction total: {Count} requirements from {Chunks} chunks",
+                allRequirements.Count, chunkIndex);
+
+            return allRequirements;
         }
 
         public async Task<Dictionary<string, string>> ExtractEquipmentSpecsAsync(string documentText)
@@ -330,8 +415,9 @@ Wyodrębnij wszystkie parametry techniczne: procesor, pamięć, dyski, RAID, sie
 ---END USER CONTENT---";
 
                 var response = await _llmProvider.SendChatAsync(SystemPrompt, prompt);
+                var cleaned = StripMarkdownCodeBlock(response);
 
-                var jsonMatch = Regex.Match(response, @"\{[\s\S]*\}");
+                var jsonMatch = Regex.Match(cleaned, @"\{[\s\S]*\}");
                 if (!jsonMatch.Success)
                     return new Dictionary<string, string>();
 
@@ -343,6 +429,80 @@ Wyodrębnij wszystkie parametry techniczne: procesor, pamięć, dyski, RAID, sie
                 _logger.LogWarning(ex, "LLM equipment specs extraction failed");
                 return new Dictionary<string, string>();
             }
+        }
+
+        public async Task<LlmDetailedMatchResult> ScoreEquipmentMatchDetailedAsync(List<LlmRequirementInput> requirements, string equipmentSpecs, string kbFragments)
+        {
+            try
+            {
+                var reqListJson = string.Join("\n", requirements.Select(r =>
+                    $"  - ID={r.RequirementId}, Urządzenie=[{r.Device}]: {SanitizeUserContent(r.RequirementText)}"));
+
+                var prompt = $@"Oceń zgodność sprzętu IT z listą wymagań OPZ (Opis Przedmiotu Zamówienia).
+
+LISTA WYMAGAŃ:
+{reqListJson}
+
+SPECYFIKACJA SPRZĘTU:
+{equipmentSpecs}
+
+DODATKOWE INFORMACJE Z DOKUMENTACJI SPRZĘTU:
+{kbFragments}
+
+Dla KAŻDEGO wymagania oceń:
+- ""met"" — sprzęt w pełni spełnia wymaganie
+- ""partial"" — sprzęt częściowo spełnia lub są wątpliwości
+- ""not_met"" — sprzęt nie spełnia wymagania
+- ""not_applicable"" — wymaganie dotyczy innego typu urządzenia
+
+WAŻNE: Jeśli wymaganie dotyczy innego urządzenia niż oceniany sprzęt (np. wymaganie dot. macierzy a oceniany sprzęt to serwer), ustaw status ""not_applicable"".
+
+Oceń też ogólną zgodność w skali 0-100 (uwzględniając TYLKO wymagania które mają status met/partial/not_met).
+
+Zwróć TYLKO obiekt JSON:
+{{
+  ""overallScore"": <0-100>,
+  ""overallExplanation"": ""<krótkie uzasadnienie po polsku, max 500 znaków>"",
+  ""requirements"": [
+    {{""requirementId"": <ID>, ""status"": ""met|partial|not_met|not_applicable"", ""explanation"": ""<krótkie uzasadnienie>""}},
+    ...
+  ]
+}}";
+
+                var response = await _llmProvider.SendChatAsync(SystemPrompt, prompt, maxTokens: 16384, temperature: 0.2);
+                var cleaned = StripMarkdownCodeBlock(response);
+
+                var jsonMatch = Regex.Match(cleaned, @"\{[\s\S]*\}");
+                if (!jsonMatch.Success)
+                {
+                    _logger.LogWarning("LLM detailed match response did not contain JSON. First 500 chars: {Response}", cleaned.Length > 500 ? cleaned[..500] : cleaned);
+                    return CreateFallbackDetailedResult(requirements);
+                }
+
+                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var result = JsonSerializer.Deserialize<LlmDetailedMatchResult>(jsonMatch.Value, options);
+                return result ?? CreateFallbackDetailedResult(requirements);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "LLM detailed equipment match scoring failed");
+                return CreateFallbackDetailedResult(requirements);
+            }
+        }
+
+        private static LlmDetailedMatchResult CreateFallbackDetailedResult(List<LlmRequirementInput> requirements)
+        {
+            return new LlmDetailedMatchResult
+            {
+                OverallScore = 0,
+                OverallExplanation = "Nie udało się przeprowadzić szczegółowej oceny zgodności.",
+                Requirements = requirements.Select(r => new LlmRequirementCompliance
+                {
+                    RequirementId = r.RequirementId,
+                    Status = "not_applicable",
+                    Explanation = "Ocena niedostępna"
+                }).ToList()
+            };
         }
 
         public async Task<LlmEquipmentMatchScore> ScoreEquipmentMatchAsync(string requirements, string equipmentSpecs, string kbFragments)
@@ -376,8 +536,9 @@ Zwróć TYLKO obiekt JSON:
 {{""score"": <0-100>, ""explanation"": ""<krótkie uzasadnienie po polsku, max 500 znaków>""}}";
 
                 var response = await _llmProvider.SendChatAsync(SystemPrompt, prompt);
+                var cleaned = StripMarkdownCodeBlock(response);
 
-                var jsonMatch = Regex.Match(response, @"\{[\s\S]*?\}");
+                var jsonMatch = Regex.Match(cleaned, @"\{[\s\S]*?\}");
                 if (!jsonMatch.Success)
                     return new LlmEquipmentMatchScore { Score = 0, Explanation = "Nie udało się ocenić zgodności." };
 
