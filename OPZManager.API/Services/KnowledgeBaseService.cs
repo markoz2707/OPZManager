@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using OPZManager.API.Data;
 using OPZManager.API.Models;
@@ -12,6 +13,7 @@ namespace OPZManager.API.Services
         private readonly ApplicationDbContext _context;
         private readonly IPdfProcessingService _pdfService;
         private readonly IEmbeddingProvider _embeddingProvider;
+        private readonly IPllumIntegrationService _pllumService;
         private readonly IConfiguration _configuration;
         private readonly ILogger<KnowledgeBaseService> _logger;
         private readonly IServiceScopeFactory _scopeFactory;
@@ -20,6 +22,7 @@ namespace OPZManager.API.Services
             ApplicationDbContext context,
             IPdfProcessingService pdfService,
             IEmbeddingProvider embeddingProvider,
+            IPllumIntegrationService pllumService,
             IConfiguration configuration,
             ILogger<KnowledgeBaseService> logger,
             IServiceScopeFactory scopeFactory)
@@ -27,6 +30,7 @@ namespace OPZManager.API.Services
             _context = context;
             _pdfService = pdfService;
             _embeddingProvider = embeddingProvider;
+            _pllumService = pllumService;
             _configuration = configuration;
             _logger = logger;
             _scopeFactory = scopeFactory;
@@ -124,20 +128,28 @@ namespace OPZManager.API.Services
             {
                 document.Status = "Przetwarzanie";
                 document.ErrorMessage = null;
+                document.ProcessingProgress = 0;
+                document.ProcessingStep = "Ekstrakcja tekstu z PDF...";
                 await _context.SaveChangesAsync();
 
-                // Extract text from PDF
+                // Step 1: Extract text from PDF (0% → 15%)
                 var text = await _pdfService.ExtractTextFromPdfAsync(document.FilePath);
 
                 if (string.IsNullOrWhiteSpace(text))
                 {
                     document.Status = "Błąd";
                     document.ErrorMessage = "Nie udało się wyodrębnić tekstu z pliku PDF.";
+                    document.ProcessingProgress = 0;
+                    document.ProcessingStep = null;
                     await _context.SaveChangesAsync();
                     return;
                 }
 
-                // Chunk the text
+                document.ProcessingProgress = 15;
+                document.ProcessingStep = "Dzielenie tekstu na fragmenty...";
+                await _context.SaveChangesAsync();
+
+                // Step 2: Chunk the text (15% → 20%)
                 var chunkSize = int.Parse(_configuration["EmbeddingSettings:ChunkSize"] ?? "500");
                 var chunkOverlap = int.Parse(_configuration["EmbeddingSettings:ChunkOverlap"] ?? "50");
                 var chunks = TextChunker.ChunkText(text, chunkSize, chunkOverlap);
@@ -146,9 +158,15 @@ namespace OPZManager.API.Services
                 {
                     document.Status = "Błąd";
                     document.ErrorMessage = "Tekst PDF nie zawiera treści do przetworzenia.";
+                    document.ProcessingProgress = 0;
+                    document.ProcessingStep = null;
                     await _context.SaveChangesAsync();
                     return;
                 }
+
+                document.ProcessingProgress = 20;
+                document.ProcessingStep = $"Przygotowanie {chunks.Count} fragmentów...";
+                await _context.SaveChangesAsync();
 
                 // Remove old chunks if reprocessing
                 if (document.Chunks.Any())
@@ -157,12 +175,20 @@ namespace OPZManager.API.Services
                     await _context.SaveChangesAsync();
                 }
 
-                // Generate embeddings in batches
+                // Step 3: Generate embeddings in batches (20% → 95%)
                 const int batchSize = 20;
                 var allChunkEntities = new List<KnowledgeChunk>();
+                var totalBatches = (int)Math.Ceiling(chunks.Count / (double)batchSize);
 
                 for (int i = 0; i < chunks.Count; i += batchSize)
                 {
+                    var currentBatch = i / batchSize + 1;
+                    var processedChunks = Math.Min(i + batchSize, chunks.Count);
+
+                    document.ProcessingProgress = 20 + (int)(75.0 * processedChunks / chunks.Count);
+                    document.ProcessingStep = $"Generowanie embeddingów: {processedChunks}/{chunks.Count} fragmentów (batch {currentBatch}/{totalBatches})";
+                    await _context.SaveChangesAsync();
+
                     var batch = chunks.Skip(i).Take(batchSize).ToList();
                     var embeddings = await _embeddingProvider.GenerateEmbeddingsAsync(batch);
 
@@ -180,20 +206,57 @@ namespace OPZManager.API.Services
                     }
                 }
 
+                // Step 4: Save to database (95% → 100%)
+                document.ProcessingProgress = 95;
+                document.ProcessingStep = "Zapisywanie do bazy danych...";
+                await _context.SaveChangesAsync();
+
                 _context.KnowledgeChunks.AddRange(allChunkEntities);
 
                 document.ChunkCount = allChunkEntities.Count;
                 document.Status = "Zindeksowany";
+                document.ProcessingProgress = 100;
+                document.ProcessingStep = null;
                 document.IndexedAt = DateTime.UtcNow;
                 await _context.SaveChangesAsync();
 
                 _logger.LogInformation("KnowledgeDocument {Id} processed successfully: {ChunkCount} chunks", document.Id, document.ChunkCount);
+
+                // Step 5: Extract equipment specs via LLM and merge into EquipmentModel
+                try
+                {
+                    var extractedSpecs = await _pllumService.ExtractEquipmentSpecsAsync(text);
+                    if (extractedSpecs.Count > 0)
+                    {
+                        var equipmentModel = await _context.EquipmentModels
+                            .FirstOrDefaultAsync(m => m.Id == document.EquipmentModelId);
+
+                        if (equipmentModel != null)
+                        {
+                            var existingSpecs = equipmentModel.Specifications ?? new Dictionary<string, object>();
+                            foreach (var spec in extractedSpecs)
+                            {
+                                existingSpecs[spec.Key] = spec.Value;
+                            }
+                            equipmentModel.SpecificationsJson = JsonSerializer.Serialize(existingSpecs);
+                            equipmentModel.UpdatedAt = DateTime.UtcNow;
+                            await _context.SaveChangesAsync();
+                            _logger.LogInformation("Merged {Count} extracted specs into EquipmentModel {ModelId}", extractedSpecs.Count, document.EquipmentModelId);
+                        }
+                    }
+                }
+                catch (Exception specEx)
+                {
+                    _logger.LogWarning(specEx, "Failed to extract equipment specs from KnowledgeDocument {Id}, embeddings are still valid", document.Id);
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error processing KnowledgeDocument {Id}", document.Id);
                 document.Status = "Błąd";
                 document.ErrorMessage = ex.Message.Length > 2000 ? ex.Message[..2000] : ex.Message;
+                document.ProcessingProgress = 0;
+                document.ProcessingStep = null;
                 await _context.SaveChangesAsync();
             }
         }

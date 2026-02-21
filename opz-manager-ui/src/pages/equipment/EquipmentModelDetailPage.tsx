@@ -54,12 +54,14 @@ const EquipmentModelDetailPage: React.FC = () => {
   }, [modelId]);
 
   // Auto-refresh documents that are processing
+  const hasProcessing = documents.some(d => d.status === 'Oczekuje' || d.status === 'Przetwarzanie');
   useEffect(() => {
-    const hasProcessing = documents.some(d => d.status === 'Oczekuje' || d.status === 'Przetwarzanie');
     if (!hasProcessing) return;
-    const interval = setInterval(refreshDocuments, 3000);
+    const interval = setInterval(() => {
+      refreshDocuments();
+    }, 3000);
     return () => clearInterval(interval);
-  }, [documents, refreshDocuments]);
+  }, [hasProcessing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -163,9 +165,17 @@ const EquipmentModelDetailPage: React.FC = () => {
                 className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
               >
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-900 truncate">
-                    {doc.originalFilename}
-                  </p>
+                  <div className="flex items-center gap-2">
+                    {(doc.status === 'Oczekuje' || doc.status === 'Przetwarzanie') && (
+                      <svg className="animate-spin h-4 w-4 text-indigo-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                    )}
+                    <p className="text-sm font-medium text-gray-900 truncate">
+                      {doc.originalFilename}
+                    </p>
+                  </div>
                   <div className="flex items-center gap-3 mt-1">
                     <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${statusColors[doc.status] || 'bg-gray-100 text-gray-800'}`}>
                       {doc.status}
@@ -182,6 +192,24 @@ const EquipmentModelDetailPage: React.FC = () => {
                       {new Date(doc.uploadedAt).toLocaleDateString('pl-PL')}
                     </span>
                   </div>
+                  {(doc.status === 'Oczekuje' || doc.status === 'Przetwarzanie') && (
+                    <div className="mt-2">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs text-gray-600">
+                          {doc.processingStep || 'Oczekiwanie na przetwarzanie...'}
+                        </span>
+                        <span className="text-xs font-medium text-indigo-600">
+                          {doc.processingProgress}%
+                        </span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div
+                          className="bg-indigo-500 h-2 rounded-full transition-all duration-500 ease-out"
+                          style={{ width: `${Math.max(doc.processingProgress, 2)}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
                   {doc.errorMessage && (
                     <p className="text-xs text-red-600 mt-1 truncate" title={doc.errorMessage}>
                       {doc.errorMessage}

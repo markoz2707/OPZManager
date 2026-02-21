@@ -123,10 +123,9 @@ npm test
 - **DB connection**: `OPZManager.API/appsettings.json` → `ConnectionStrings:DefaultConnection`
 - **JWT settings**: `OPZManager.API/appsettings.json` → `JwtSettings`
 - **LLM provider**: `OPZManager.API/appsettings.json` → `LlmSettings:Provider` (`"local"` | `"gemini"` | `"anthropic"`)
-- **LLM local settings**: `LlmSettings:Local:BaseUrl`, `LlmSettings:Local:ModelName`
+- **LLM local settings**: `LlmSettings:Local:BaseUrl`, `LlmSettings:Local:ApiKey`, `LlmSettings:Local:ModelName`
 - **LLM Gemini settings**: `LlmSettings:Gemini:ApiKey`, `LlmSettings:Gemini:ModelName`
 - **LLM Anthropic settings**: `LlmSettings:Anthropic:ApiKey`, `LlmSettings:Anthropic:ModelName`
-- **LLM API URL (legacy)**: `PllumAPI:BaseUrl` (fallback for local provider)
 - **Embedding provider**: `EmbeddingSettings:Provider` (`"openai-compatible"` | `"gemini"`) — independent from LLM
 - **Embedding OpenAI-compatible**: `EmbeddingSettings:OpenAICompatible:BaseUrl`, `ApiKey`, `ModelName`, `Dimensions`
 - **Embedding Gemini**: `EmbeddingSettings:Gemini:ApiKey`, `ModelName`, `Dimensions`

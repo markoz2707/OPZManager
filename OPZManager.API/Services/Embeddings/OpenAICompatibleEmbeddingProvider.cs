@@ -9,22 +9,29 @@ namespace OPZManager.API.Services.Embeddings
         private readonly ILogger<OpenAICompatibleEmbeddingProvider> _logger;
         private readonly string _modelName;
         private readonly int _dimensions;
+        private readonly string _providerName;
 
-        public string ProviderName => "OpenAI-Compatible";
+        public string ProviderName => _providerName;
         public string ModelName => _modelName;
         public int Dimensions => _dimensions;
 
-        public OpenAICompatibleEmbeddingProvider(HttpClient httpClient, IConfiguration configuration, ILogger<OpenAICompatibleEmbeddingProvider> logger)
+        /// <summary>
+        /// configSection: e.g. "OpenAICompatible" or "Mistral" — reads from EmbeddingSettings:{configSection}:*
+        /// </summary>
+        public OpenAICompatibleEmbeddingProvider(HttpClient httpClient, IConfiguration configuration, ILogger<OpenAICompatibleEmbeddingProvider> logger, string configSection = "OpenAICompatible")
         {
             _httpClient = httpClient;
             _logger = logger;
-            _modelName = configuration["EmbeddingSettings:OpenAICompatible:ModelName"] ?? "text-embedding-3-small";
-            _dimensions = int.Parse(configuration["EmbeddingSettings:OpenAICompatible:Dimensions"] ?? "1536");
 
-            var baseUrl = configuration["EmbeddingSettings:OpenAICompatible:BaseUrl"] ?? "http://localhost:1234/v1/";
+            var section = $"EmbeddingSettings:{configSection}";
+            _providerName = configSection == "Mistral" ? "Mistral" : "OpenAI-Compatible";
+            _modelName = configuration[$"{section}:ModelName"] ?? "text-embedding-3-small";
+            _dimensions = int.Parse(configuration[$"{section}:Dimensions"] ?? "1536");
+
+            var baseUrl = configuration[$"{section}:BaseUrl"] ?? "http://localhost:1234/v1/";
             _httpClient.BaseAddress = new Uri(baseUrl);
 
-            var apiKey = configuration["EmbeddingSettings:OpenAICompatible:ApiKey"];
+            var apiKey = configuration[$"{section}:ApiKey"];
             if (!string.IsNullOrEmpty(apiKey))
             {
                 _httpClient.DefaultRequestHeaders.Authorization =

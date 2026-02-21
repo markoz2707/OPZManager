@@ -153,7 +153,7 @@ const EquipmentCatalogPage: React.FC = () => {
               {models.map((m) => (
                 <tr key={m.id} className="hover:bg-gray-50">
                   <td className="px-6 py-4">
-                    <Link to={`/equipment/${m.id}`} className="text-indigo-600 hover:text-indigo-800 font-medium">{m.modelName}</Link>
+                    <Link to={`/admin/equipment/${m.id}`} className="text-indigo-600 hover:text-indigo-800 font-medium">{m.modelName}</Link>
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-500">{m.manufacturerName}</td>
                   <td className="px-6 py-4 text-sm text-gray-500">{m.typeName}</td>

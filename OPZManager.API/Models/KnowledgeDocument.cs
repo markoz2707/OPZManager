@@ -28,6 +28,13 @@ namespace OPZManager.API.Models
 
         public int ChunkCount { get; set; }
 
+        /// <summary>Processing progress 0-100%</summary>
+        public int ProcessingProgress { get; set; }
+
+        /// <summary>Current processing step description</summary>
+        [StringLength(200)]
+        public string? ProcessingStep { get; set; }
+
         public DateTime UploadedAt { get; set; } = DateTime.UtcNow;
 
         public DateTime? IndexedAt { get; set; }

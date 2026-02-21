@@ -1,8 +1,11 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import StepIndicator from '../../components/public/StepIndicator';
 import EmailGateModal from '../../components/public/EmailGateModal';
 import { usePublicGenerator } from '../../hooks/usePublicGenerator';
 import { useLeadCapture } from '../../hooks/useLeadCapture';
+import { useAuth } from '../../hooks/useAuth';
+import { publicGeneratorAuthAPI } from '../../services/api';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 
 const steps = [
@@ -13,14 +16,45 @@ const steps = [
   { label: 'Pobieranie' },
 ];
 
+const STORAGE_KEY = 'opz_generator_state';
+
 const GenerateOPZPage: React.FC = () => {
+  const navigate = useNavigate();
+  const { isAuthenticated } = useAuth();
   const [currentStep, setCurrentStep] = useState(0);
   const [selectedTypeId, setSelectedTypeId] = useState<number | null>(null);
   const [selectedModelIds, setSelectedModelIds] = useState<number[]>([]);
   const [showEmailModal, setShowEmailModal] = useState(false);
 
-  const { types, models, content, setContent, generating, loadingData, generateContent } = usePublicGenerator();
+  const { types, models, content, setContent, isFullContent, generating, loadingData, generateContent, fetchFullContent } = usePublicGenerator();
   const { downloadToken, submitting, captureLead, downloadPdf } = useLeadCapture();
+
+  // Restore state after login redirect
+  useEffect(() => {
+    if (isAuthenticated && !loadingData) {
+      const saved = sessionStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const state = JSON.parse(saved);
+          sessionStorage.removeItem(STORAGE_KEY);
+          if (state.selectedTypeId && state.selectedModelIds?.length > 0) {
+            setSelectedTypeId(state.selectedTypeId);
+            setSelectedModelIds(state.selectedModelIds);
+            // Auto-fetch full content
+            const typeName = types.find(t => t.id === state.selectedTypeId)?.name;
+            if (typeName) {
+              setCurrentStep(2);
+              fetchFullContent(state.selectedModelIds, typeName).then(result => {
+                if (result) setCurrentStep(3);
+              });
+            }
+          }
+        } catch {
+          sessionStorage.removeItem(STORAGE_KEY);
+        }
+      }
+    }
+  }, [isAuthenticated, loadingData, types]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectedType = useMemo(
     () => types.find(t => t.id === selectedTypeId),
@@ -53,6 +87,15 @@ const GenerateOPZPage: React.FC = () => {
     }
   };
 
+  const handleLoginRedirect = () => {
+    // Save state before redirect
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
+      selectedTypeId,
+      selectedModelIds,
+    }));
+    navigate('/login?returnTo=/generate');
+  };
+
   const handleEmailSubmit = async (email: string, marketingConsent: boolean) => {
     const result = await captureLead({
       email,
@@ -66,8 +109,27 @@ const GenerateOPZPage: React.FC = () => {
   };
 
   const handleDownload = async () => {
-    const title = `OPZ - ${selectedType?.name || 'Dokument'}`;
-    await downloadPdf(content, title);
+    if (isAuthenticated && selectedType) {
+      // Authenticated: download directly via authorized endpoint
+      try {
+        const blob = await publicGeneratorAuthAPI.downloadPdf(selectedModelIds, selectedType.name);
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `OPZ_${selectedType.name}_${new Date().toISOString().slice(0, 10)}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+      } catch {
+        // Fallback to email gate
+        const title = `OPZ - ${selectedType?.name || 'Dokument'}`;
+        await downloadPdf(content, title);
+      }
+    } else {
+      const title = `OPZ - ${selectedType?.name || 'Dokument'}`;
+      await downloadPdf(content, title);
+    }
   };
 
   if (loadingData) {
@@ -187,7 +249,9 @@ const GenerateOPZPage: React.FC = () => {
       {currentStep === 3 && content && (
         <div>
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-gray-800">Podgląd treści OPZ</h2>
+            <h2 className="text-lg font-semibold text-gray-800">
+              {isFullContent ? 'Podgląd treści OPZ' : 'Podgląd treści OPZ (fragment)'}
+            </h2>
             <div className="flex gap-2">
               <button
                 onClick={() => setCurrentStep(1)}
@@ -195,36 +259,70 @@ const GenerateOPZPage: React.FC = () => {
               >
                 Zmień modele
               </button>
-              <button
-                onClick={async () => {
-                  if (!selectedType) return;
-                  await generateContent(selectedModelIds, selectedType.name);
-                }}
-                disabled={generating}
-                className="px-4 py-2 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50 disabled:opacity-50"
-              >
-                Regeneruj
-              </button>
-              <button
-                onClick={() => {
-                  if (downloadToken) {
-                    setCurrentStep(4);
-                  } else {
-                    setShowEmailModal(true);
-                  }
-                }}
-                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                Pobierz PDF
-              </button>
+              {isFullContent && (
+                <button
+                  onClick={async () => {
+                    if (!selectedType) return;
+                    await generateContent(selectedModelIds, selectedType.name);
+                  }}
+                  disabled={generating}
+                  className="px-4 py-2 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50 disabled:opacity-50"
+                >
+                  Regeneruj
+                </button>
+              )}
+              {isFullContent ? (
+                <button
+                  onClick={() => {
+                    if (downloadToken) {
+                      setCurrentStep(4);
+                    } else if (isAuthenticated) {
+                      setCurrentStep(4);
+                    } else {
+                      setShowEmailModal(true);
+                    }
+                  }}
+                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  Pobierz PDF
+                </button>
+              ) : (
+                <button
+                  onClick={handleLoginRedirect}
+                  className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+                >
+                  Zaloguj się, aby zobaczyć pełny dokument
+                </button>
+              )}
             </div>
           </div>
 
-          <textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            className="w-full h-96 p-4 border border-gray-300 rounded-xl font-mono text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none resize-y"
-          />
+          {isFullContent ? (
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              className="w-full h-96 p-4 border border-gray-300 rounded-xl font-mono text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none resize-y"
+            />
+          ) : (
+            <>
+              <div
+                className="w-full h-96 p-4 border border-gray-300 rounded-xl font-mono text-sm bg-gray-50 overflow-y-auto whitespace-pre-wrap text-gray-700"
+              >
+                {content}
+              </div>
+              <div className="mt-4 p-4 bg-indigo-50 border border-indigo-200 rounded-xl text-center">
+                <p className="text-indigo-700 font-medium mb-2">
+                  Zaloguj się, aby zobaczyć i edytować pełny dokument OPZ
+                </p>
+                <button
+                  onClick={handleLoginRedirect}
+                  className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+                >
+                  Zaloguj się
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 

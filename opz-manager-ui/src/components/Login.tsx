@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { authAPI, LoginRequest } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 
 const Login: React.FC = () => {
   const { login } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const returnTo = searchParams.get('returnTo');
   const [credentials, setCredentials] = useState<LoginRequest>({
     username: '',
     password: '',
@@ -21,7 +23,7 @@ const Login: React.FC = () => {
     try {
       const response = await authAPI.login(credentials);
       login(response.token, response.user);
-      navigate('/admin', { replace: true });
+      navigate(returnTo || '/admin', { replace: true });
     } catch (err: any) {
       setError(err.response?.data?.message || 'Logowanie nie powiodło się');
     } finally {

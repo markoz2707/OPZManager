@@ -98,7 +98,6 @@ switch (llmProvider.ToLower())
         builder.Services.AddHttpClient<ILlmProvider, LocalPllumProvider>(client =>
         {
             client.BaseAddress = new Uri(builder.Configuration["LlmSettings:Local:BaseUrl"]
-                ?? builder.Configuration["PllumAPI:BaseUrl"]
                 ?? "http://localhost:1234/v1/");
             client.DefaultRequestHeaders.Add("Accept", "application/json");
         });
@@ -111,6 +110,16 @@ switch (embeddingProvider.ToLower())
 {
     case "gemini":
         builder.Services.AddHttpClient<IEmbeddingProvider, GeminiEmbeddingProvider>();
+        break;
+    case "mistral":
+        builder.Services.AddHttpClient("EmbeddingProvider");
+        builder.Services.AddScoped<IEmbeddingProvider>(sp =>
+        {
+            var httpClient = sp.GetRequiredService<IHttpClientFactory>().CreateClient("EmbeddingProvider");
+            var config = sp.GetRequiredService<IConfiguration>();
+            var logger = sp.GetRequiredService<ILogger<OpenAICompatibleEmbeddingProvider>>();
+            return new OpenAICompatibleEmbeddingProvider(httpClient, config, logger, "Mistral");
+        });
         break;
     default: // "openai-compatible"
         builder.Services.AddHttpClient<IEmbeddingProvider, OpenAICompatibleEmbeddingProvider>();

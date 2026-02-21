@@ -8,11 +8,19 @@ namespace OPZManager.API.Services
     {
         private readonly ApplicationDbContext _context;
         private readonly IPllumIntegrationService _pllumService;
+        private readonly IKnowledgeBaseService _knowledgeBaseService;
+        private readonly ILogger<EquipmentMatchingService> _logger;
 
-        public EquipmentMatchingService(ApplicationDbContext context, IPllumIntegrationService pllumService)
+        public EquipmentMatchingService(
+            ApplicationDbContext context,
+            IPllumIntegrationService pllumService,
+            IKnowledgeBaseService knowledgeBaseService,
+            ILogger<EquipmentMatchingService> logger)
         {
             _context = context;
             _pllumService = pllumService;
+            _knowledgeBaseService = knowledgeBaseService;
+            _logger = logger;
         }
 
         public async Task<List<EquipmentMatch>> FindMatchingEquipmentAsync(OPZDocument opzDocument)
@@ -27,32 +35,66 @@ namespace OPZManager.API.Services
             if (!requirements.Any())
                 return matches;
 
-            // Get all equipment models
-            var allEquipment = await _context.EquipmentModels
+            var requirementsText = string.Join("\n", requirements.Select(r => r.RequirementText));
+
+            // Detect equipment type from requirements to pre-filter
+            var detectedTypeId = await DetectEquipmentTypeAsync(requirements);
+
+            // Get equipment models (filtered by type if detected)
+            var equipmentQuery = _context.EquipmentModels
                 .Include(e => e.Manufacturer)
                 .Include(e => e.Type)
-                .ToListAsync();
+                .AsQueryable();
+
+            if (detectedTypeId.HasValue)
+            {
+                equipmentQuery = equipmentQuery.Where(e => e.TypeId == detectedTypeId.Value);
+                _logger.LogInformation("Pre-filtered equipment to typeId={TypeId}", detectedTypeId.Value);
+            }
+
+            var allEquipment = await equipmentQuery.ToListAsync();
 
             foreach (var equipment in allEquipment)
             {
-                var matchScore = await CalculateMatchScoreAsync(equipment, requirements);
-                
-                if (matchScore > 0.3m) // Only include matches with score > 30%
+                try
                 {
-                    var complianceDescription = await _pllumService.GenerateComplianceDescriptionAsync(
-                        equipment, 
-                        string.Join("\n", requirements.Select(r => r.RequirementText))
-                    );
-
-                    var match = new EquipmentMatch
+                    // RAG search: find relevant KB fragments for this equipment
+                    var kbFragments = new List<KnowledgeSearchResult>();
+                    try
                     {
-                        OPZId = opzDocument.Id,
-                        ModelId = equipment.Id,
-                        MatchScore = matchScore,
-                        ComplianceDescription = complianceDescription
-                    };
+                        kbFragments = await _knowledgeBaseService.SearchAsync(equipment.Id, requirementsText, topK: 3);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "No KB results for equipment {ModelId}", equipment.Id);
+                    }
 
-                    matches.Add(match);
+                    var kbText = kbFragments.Count > 0
+                        ? string.Join("\n---\n", kbFragments.Select(f => f.Content))
+                        : "Brak dodatkowej dokumentacji w bazie wiedzy.";
+
+                    // LLM scoring
+                    var llmScore = await _pllumService.ScoreEquipmentMatchAsync(
+                        requirementsText,
+                        $"{equipment.Manufacturer.Name} {equipment.ModelName}\nSpecyfikacja: {equipment.SpecificationsJson}",
+                        kbText);
+
+                    var normalizedScore = Math.Clamp(llmScore.Score / 100.0m, 0m, 1m);
+
+                    if (normalizedScore > 0.2m) // Include matches with LLM score > 20%
+                    {
+                        matches.Add(new EquipmentMatch
+                        {
+                            OPZId = opzDocument.Id,
+                            ModelId = equipment.Id,
+                            MatchScore = normalizedScore,
+                            ComplianceDescription = llmScore.Explanation
+                        });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to score equipment {ModelId} against OPZ {OPZId}", equipment.Id, opzDocument.Id);
                 }
             }
 
@@ -71,16 +113,71 @@ namespace OPZManager.API.Services
             if (!requirements.Any())
                 return 0m;
 
-            var totalScore = 0m;
-            var maxPossibleScore = requirements.Count;
+            var requirementsText = string.Join("\n", requirements.Select(r => r.RequirementText));
 
-            foreach (var requirement in requirements)
+            try
             {
-                var score = CalculateRequirementMatch(equipment, requirement);
-                totalScore += score;
+                var kbFragments = new List<KnowledgeSearchResult>();
+                try
+                {
+                    kbFragments = await _knowledgeBaseService.SearchAsync(equipment.Id, requirementsText, topK: 3);
+                }
+                catch { /* no KB data available */ }
+
+                var kbText = kbFragments.Count > 0
+                    ? string.Join("\n---\n", kbFragments.Select(f => f.Content))
+                    : "Brak dodatkowej dokumentacji.";
+
+                var llmScore = await _pllumService.ScoreEquipmentMatchAsync(
+                    requirementsText,
+                    $"{equipment.Manufacturer.Name} {equipment.ModelName}\nSpecyfikacja: {equipment.SpecificationsJson}",
+                    kbText);
+
+                return Math.Clamp(llmScore.Score / 100.0m, 0m, 1m);
+            }
+            catch
+            {
+                // Fallback to simple matching
+                var totalScore = 0m;
+                foreach (var requirement in requirements)
+                {
+                    totalScore += CalculateRequirementMatch(equipment, requirement);
+                }
+                return totalScore / requirements.Count;
+            }
+        }
+
+        private async Task<int?> DetectEquipmentTypeAsync(List<OPZRequirement> requirements)
+        {
+            var allText = string.Join(" ", requirements.Select(r => r.RequirementText)).ToLower();
+            var types = await _context.EquipmentTypes.ToListAsync();
+
+            // Simple keyword detection for equipment type
+            foreach (var type in types)
+            {
+                var typeName = type.Name.ToLower();
+                if (allText.Contains(typeName))
+                    return type.Id;
             }
 
-            return totalScore / maxPossibleScore;
+            // Check common keywords
+            if (allText.Contains("serwer") || allText.Contains("procesor") || allText.Contains("cpu"))
+            {
+                var serverType = types.FirstOrDefault(t => t.Name.ToLower().Contains("serwer"));
+                if (serverType != null) return serverType.Id;
+            }
+            if (allText.Contains("macierz") || allText.Contains("storage") || allText.Contains("raid"))
+            {
+                var storageType = types.FirstOrDefault(t => t.Name.ToLower().Contains("macierz"));
+                if (storageType != null) return storageType.Id;
+            }
+            if (allText.Contains("przełącznik") || allText.Contains("switch") || allText.Contains("sieciow"))
+            {
+                var networkType = types.FirstOrDefault(t => t.Name.ToLower().Contains("przełącznik"));
+                if (networkType != null) return networkType.Id;
+            }
+
+            return null; // No type detected, search all equipment
         }
 
         public async Task<List<EquipmentModel>> GetEquipmentByManufacturerAsync(int manufacturerId)

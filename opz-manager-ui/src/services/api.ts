@@ -139,6 +139,8 @@ export interface KnowledgeDocument {
   status: string;
   errorMessage: string | null;
   chunkCount: number;
+  processingProgress: number;
+  processingStep: string | null;
   uploadedAt: string;
   indexedAt: string | null;
 }
@@ -290,6 +292,19 @@ export const generatorAPI = {
   },
   generateTechnicalSpecs: async (equipmentModelIds: number[], equipmentType: string): Promise<{ content: string }> => {
     const response = await api.post('/generator/technical-specs', { equipmentModelIds, equipmentType });
+    return response.data;
+  },
+};
+
+// ─── Public Generator API (with JWT) ────────────────────
+
+export const publicGeneratorAuthAPI = {
+  generateFullContent: async (equipmentModelIds: number[], equipmentType: string): Promise<{ content: string; isFullContent: boolean }> => {
+    const response = await api.post('/public/generate/content', { equipmentModelIds, equipmentType });
+    return response.data;
+  },
+  downloadPdf: async (equipmentModelIds: number[], equipmentType: string): Promise<Blob> => {
+    const response = await api.post('/public/generate/pdf', { equipmentModelIds, equipmentType }, { responseType: 'blob' });
     return response.data;
   },
 };

@@ -203,7 +203,7 @@ namespace OPZManager.API.Data
                     .HasForeignKey(e => e.KnowledgeDocumentId)
                     .OnDelete(DeleteBehavior.Cascade);
                 entity.Property(e => e.Embedding)
-                    .HasColumnType("vector(1536)");
+                    .HasColumnType("vector(1024)");
             });
 
             // Seed data

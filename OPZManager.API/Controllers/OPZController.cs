@@ -53,7 +53,8 @@ namespace OPZManager.API.Controllers
                 await file.CopyToAsync(stream);
             }
 
-            var requirements = await _pdfProcessingService.ExtractOPZRequirementsAsync(filePath);
+            var pdfText = await _pdfProcessingService.ExtractTextFromPdfAsync(filePath);
+            var requirements = await _pdfProcessingService.ExtractOPZRequirementsAsync(pdfText);
 
             var opzDocument = new OPZDocument
             {

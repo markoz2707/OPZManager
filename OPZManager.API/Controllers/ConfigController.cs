@@ -42,7 +42,7 @@ namespace OPZManager.API.Controllers
             var status = new ConfigStatusDto
             {
                 LlmConnected = llmConnected,
-                LlmBaseUrl = _configuration["LlmSettings:Local:BaseUrl"] ?? _configuration["PllumAPI:BaseUrl"] ?? "http://localhost:1234/v1/",
+                LlmBaseUrl = _configuration["LlmSettings:Local:BaseUrl"] ?? "http://localhost:1234/v1/",
                 LlmProvider = _llmProvider.ProviderName,
                 LlmModelName = _llmProvider.ModelName,
                 ManufacturersCount = await _context.Manufacturers.CountAsync(),
@@ -108,7 +108,7 @@ namespace OPZManager.API.Controllers
                 connected = isConnected,
                 provider = _llmProvider.ProviderName,
                 modelName = _llmProvider.ModelName,
-                baseUrl = _configuration["LlmSettings:Local:BaseUrl"] ?? _configuration["PllumAPI:BaseUrl"] ?? "http://localhost:1234/v1/",
+                baseUrl = _configuration["LlmSettings:Local:BaseUrl"] ?? "http://localhost:1234/v1/",
                 message = isConnected
                     ? $"Połączenie z modelem LLM ({_llmProvider.ProviderName}) działa prawidłowo."
                     : $"Nie można połączyć się z modelem LLM ({_llmProvider.ProviderName})."

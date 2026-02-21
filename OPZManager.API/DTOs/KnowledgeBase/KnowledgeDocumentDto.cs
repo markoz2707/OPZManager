@@ -9,6 +9,8 @@ namespace OPZManager.API.DTOs.KnowledgeBase
         public string Status { get; set; } = string.Empty;
         public string? ErrorMessage { get; set; }
         public int ChunkCount { get; set; }
+        public int ProcessingProgress { get; set; }
+        public string? ProcessingStep { get; set; }
         public DateTime UploadedAt { get; set; }
         public DateTime? IndexedAt { get; set; }
     }
