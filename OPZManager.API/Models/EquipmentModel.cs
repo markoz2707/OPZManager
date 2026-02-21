@@ -27,6 +27,7 @@ namespace OPZManager.API.Models
         public virtual EquipmentType Type { get; set; } = null!;
         public virtual ICollection<Document> Documents { get; set; } = new List<Document>();
         public virtual ICollection<EquipmentMatch> EquipmentMatches { get; set; } = new List<EquipmentMatch>();
+        public virtual ICollection<KnowledgeDocument> KnowledgeDocuments { get; set; } = new List<KnowledgeDocument>();
         
         // Helper property to work with specifications as object
         public Dictionary<string, object>? Specifications

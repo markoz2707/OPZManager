@@ -23,10 +23,15 @@ namespace OPZManager.API.Data
         public DbSet<TrainingData> TrainingData { get; set; }
         public DbSet<OPZVerificationResult> OPZVerificationResults { get; set; }
         public DbSet<LeadCapture> LeadCaptures { get; set; }
+        public DbSet<KnowledgeDocument> KnowledgeDocuments { get; set; }
+        public DbSet<KnowledgeChunk> KnowledgeChunks { get; set; }
+        public DbSet<RequirementCompliance> RequirementCompliances { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
+
+            modelBuilder.HasPostgresExtension("vector");
 
             // User configuration
             modelBuilder.Entity<User>(entity =>
@@ -175,6 +180,46 @@ namespace OPZManager.API.Data
                     .WithMany(e => e.LeadCaptures)
                     .HasForeignKey(e => e.OPZDocumentId)
                     .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // KnowledgeDocument configuration
+            modelBuilder.Entity<KnowledgeDocument>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.EquipmentModelId);
+                entity.HasIndex(e => e.Status);
+                entity.HasOne(e => e.EquipmentModel)
+                    .WithMany(e => e.KnowledgeDocuments)
+                    .HasForeignKey(e => e.EquipmentModelId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // KnowledgeChunk configuration
+            modelBuilder.Entity<KnowledgeChunk>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.KnowledgeDocumentId);
+                entity.HasOne(e => e.KnowledgeDocument)
+                    .WithMany(e => e.Chunks)
+                    .HasForeignKey(e => e.KnowledgeDocumentId)
+                    .OnDelete(DeleteBehavior.Cascade);
+                entity.Property(e => e.Embedding)
+                    .HasColumnType("vector(1024)");
+            });
+
+            // RequirementCompliance configuration
+            modelBuilder.Entity<RequirementCompliance>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => new { e.EquipmentMatchId, e.RequirementId }).IsUnique();
+                entity.HasOne(e => e.EquipmentMatch)
+                    .WithMany(e => e.RequirementCompliances)
+                    .HasForeignKey(e => e.EquipmentMatchId)
+                    .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(e => e.OPZRequirement)
+                    .WithMany()
+                    .HasForeignKey(e => e.RequirementId)
+                    .OnDelete(DeleteBehavior.Cascade);
             });
 
             // Seed data

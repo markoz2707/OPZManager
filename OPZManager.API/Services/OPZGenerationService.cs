@@ -155,6 +155,44 @@ namespace OPZManager.API.Services
             return sb.ToString();
         }
 
+        public ContentPreviewResult SplitContentForPreview(string fullContent)
+        {
+            if (string.IsNullOrWhiteSpace(fullContent))
+                return new ContentPreviewResult { Preview = string.Empty, FullContent = string.Empty };
+
+            // Try to find section 3 marker
+            var section3Patterns = new[] { "\n3.", "\n3 ", "\n3)" };
+            var splitIndex = -1;
+
+            foreach (var pattern in section3Patterns)
+            {
+                var idx = fullContent.IndexOf(pattern, StringComparison.Ordinal);
+                if (idx > 0)
+                {
+                    splitIndex = idx;
+                    break;
+                }
+            }
+
+            if (splitIndex <= 0)
+            {
+                // Fallback: 30% of content, aligned to nearest newline
+                splitIndex = (int)(fullContent.Length * 0.3);
+                var nextNewline = fullContent.IndexOf('\n', splitIndex);
+                if (nextNewline > 0)
+                    splitIndex = nextNewline;
+            }
+
+            var preview = fullContent[..splitIndex].TrimEnd()
+                + "\n\n--- Zaloguj się, aby zobaczyć pełny dokument ---";
+
+            return new ContentPreviewResult
+            {
+                Preview = preview,
+                FullContent = fullContent
+            };
+        }
+
         private async Task<string> GenerateFallbackOPZContentAsync(List<EquipmentModel> selectedEquipment, string equipmentType)
         {
             var sb = new StringBuilder();

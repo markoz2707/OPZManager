@@ -168,8 +168,13 @@ export const publicOPZAPI = {
 
 // ─── Public Generator API ───────────────────────────────
 
+export interface GenerateContentResponse {
+  content: string;
+  isFullContent: boolean;
+}
+
 export const publicGeneratorAPI = {
-  generateContent: async (equipmentModelIds: number[], equipmentType: string): Promise<{ content: string }> => {
+  generateContent: async (equipmentModelIds: number[], equipmentType: string): Promise<GenerateContentResponse> => {
     const response = await publicApi.post('/public/generate/content', { equipmentModelIds, equipmentType });
     return response.data;
   },

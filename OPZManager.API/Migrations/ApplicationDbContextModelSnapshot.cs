@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using OPZManager.API.Data;
+using Pgvector;
 
 #nullable disable
 
@@ -20,6 +21,7 @@ namespace OPZManager.API.Migrations
                 .HasAnnotation("ProductVersion", "9.0.7")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
+            NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "vector");
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
             modelBuilder.Entity("OPZManager.API.Models.Document", b =>
@@ -234,6 +236,95 @@ namespace OPZManager.API.Migrations
                             Name = "Przełączniki sieciowe",
                             UpdatedAt = new DateTime(2025, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc)
                         });
+                });
+
+            modelBuilder.Entity("OPZManager.API.Models.KnowledgeChunk", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("ChunkIndex")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Vector>("Embedding")
+                        .HasColumnType("vector(1024)");
+
+                    b.Property<int>("KnowledgeDocumentId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("TokenCount")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("KnowledgeDocumentId");
+
+                    b.ToTable("KnowledgeChunks");
+                });
+
+            modelBuilder.Entity("OPZManager.API.Models.KnowledgeDocument", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("ChunkCount")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("EquipmentModelId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<string>("FilePath")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<long>("FileSizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("IndexedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("OriginalFilename")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<int>("ProcessingProgress")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ProcessingStep")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<DateTime>("UploadedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EquipmentModelId");
+
+                    b.HasIndex("Status");
+
+                    b.ToTable("KnowledgeDocuments");
                 });
 
             modelBuilder.Entity("OPZManager.API.Models.LeadCapture", b =>
@@ -471,6 +562,38 @@ namespace OPZManager.API.Migrations
                     b.ToTable("OPZVerificationResults");
                 });
 
+            modelBuilder.Entity("OPZManager.API.Models.RequirementCompliance", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("EquipmentMatchId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Explanation")
+                        .HasColumnType("text");
+
+                    b.Property<int>("RequirementId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RequirementId");
+
+                    b.HasIndex("EquipmentMatchId", "RequirementId")
+                        .IsUnique();
+
+                    b.ToTable("RequirementCompliances");
+                });
+
             modelBuilder.Entity("OPZManager.API.Models.TrainingData", b =>
                 {
                     b.Property<int>("Id")
@@ -663,6 +786,28 @@ namespace OPZManager.API.Migrations
                     b.Navigation("Type");
                 });
 
+            modelBuilder.Entity("OPZManager.API.Models.KnowledgeChunk", b =>
+                {
+                    b.HasOne("OPZManager.API.Models.KnowledgeDocument", "KnowledgeDocument")
+                        .WithMany("Chunks")
+                        .HasForeignKey("KnowledgeDocumentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("KnowledgeDocument");
+                });
+
+            modelBuilder.Entity("OPZManager.API.Models.KnowledgeDocument", b =>
+                {
+                    b.HasOne("OPZManager.API.Models.EquipmentModel", "EquipmentModel")
+                        .WithMany("KnowledgeDocuments")
+                        .HasForeignKey("EquipmentModelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("EquipmentModel");
+                });
+
             modelBuilder.Entity("OPZManager.API.Models.LeadCapture", b =>
                 {
                     b.HasOne("OPZManager.API.Models.OPZDocument", "OPZDocument")
@@ -705,6 +850,25 @@ namespace OPZManager.API.Migrations
                     b.Navigation("OPZDocument");
                 });
 
+            modelBuilder.Entity("OPZManager.API.Models.RequirementCompliance", b =>
+                {
+                    b.HasOne("OPZManager.API.Models.EquipmentMatch", "EquipmentMatch")
+                        .WithMany("RequirementCompliances")
+                        .HasForeignKey("EquipmentMatchId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("OPZManager.API.Models.OPZRequirement", "OPZRequirement")
+                        .WithMany()
+                        .HasForeignKey("RequirementId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("EquipmentMatch");
+
+                    b.Navigation("OPZRequirement");
+                });
+
             modelBuilder.Entity("OPZManager.API.Models.UserSession", b =>
                 {
                     b.HasOne("OPZManager.API.Models.User", "User")
@@ -721,11 +885,18 @@ namespace OPZManager.API.Migrations
                     b.Navigation("DocumentSpecs");
                 });
 
+            modelBuilder.Entity("OPZManager.API.Models.EquipmentMatch", b =>
+                {
+                    b.Navigation("RequirementCompliances");
+                });
+
             modelBuilder.Entity("OPZManager.API.Models.EquipmentModel", b =>
                 {
                     b.Navigation("Documents");
 
                     b.Navigation("EquipmentMatches");
+
+                    b.Navigation("KnowledgeDocuments");
                 });
 
             modelBuilder.Entity("OPZManager.API.Models.EquipmentType", b =>
@@ -733,6 +904,11 @@ namespace OPZManager.API.Migrations
                     b.Navigation("Documents");
 
                     b.Navigation("EquipmentModels");
+                });
+
+            modelBuilder.Entity("OPZManager.API.Models.KnowledgeDocument", b =>
+                {
+                    b.Navigation("Chunks");
                 });
 
             modelBuilder.Entity("OPZManager.API.Models.Manufacturer", b =>

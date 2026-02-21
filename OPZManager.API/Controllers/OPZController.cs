@@ -53,7 +53,8 @@ namespace OPZManager.API.Controllers
                 await file.CopyToAsync(stream);
             }
 
-            var requirements = await _pdfProcessingService.ExtractOPZRequirementsAsync(filePath);
+            var pdfText = await _pdfProcessingService.ExtractTextFromPdfAsync(filePath);
+            var requirements = await _pdfProcessingService.ExtractOPZRequirementsAsync(pdfText);
 
             var opzDocument = new OPZDocument
             {
@@ -93,6 +94,8 @@ namespace OPZManager.API.Controllers
         {
             var document = await _context.OPZDocuments
                 .Include(d => d.OPZRequirements)
+                .Include(d => d.EquipmentMatches)
+                    .ThenInclude(m => m.RequirementCompliances)
                 .Include(d => d.EquipmentMatches)
                     .ThenInclude(m => m.EquipmentModel)
                         .ThenInclude(e => e.Manufacturer)
@@ -146,6 +149,7 @@ namespace OPZManager.API.Controllers
         public async Task<ActionResult<List<EquipmentMatchDto>>> GetOPZMatches(int id)
         {
             var matches = await _context.EquipmentMatches
+                .Include(m => m.RequirementCompliances)
                 .Include(m => m.EquipmentModel)
                     .ThenInclude(m => m.Manufacturer)
                 .Include(m => m.EquipmentModel)

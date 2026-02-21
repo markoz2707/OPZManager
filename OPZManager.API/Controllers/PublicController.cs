@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AutoMapper;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -88,7 +89,8 @@ namespace OPZManager.API.Controllers
             List<OPZRequirement> requirements;
             try
             {
-                requirements = await _pdfService.ExtractOPZRequirementsAsync(filePath);
+                var pdfText = await _pdfService.ExtractTextFromPdfAsync(filePath);
+                requirements = await _pdfService.ExtractOPZRequirementsAsync(pdfText);
             }
             catch (Exception ex)
             {
@@ -236,8 +238,37 @@ namespace OPZManager.API.Controllers
             if (!equipmentModels.Any())
                 return NotFound(new { message = "Nie znaleziono wybranych modeli sprzętu." });
 
-            var content = await _generationService.GenerateOPZContentAsync(equipmentModels, request.EquipmentType);
-            return Ok(new { content });
+            var fullContent = await _generationService.GenerateOPZContentAsync(equipmentModels, request.EquipmentType);
+
+            // Authenticated users get full content
+            if (User.Identity?.IsAuthenticated == true)
+            {
+                return Ok(new { content = fullContent, isFullContent = true });
+            }
+
+            // Anonymous users get preview only
+            var preview = _generationService.SplitContentForPreview(fullContent);
+            return Ok(new { content = preview.Preview, isFullContent = false });
+        }
+
+        // POST api/public/generate/pdf — requires JWT
+        [Authorize]
+        [HttpPost("generate/pdf")]
+        public async Task<IActionResult> GenerateAuthorizedPdf([FromBody] GenerateOPZContentRequestDto request)
+        {
+            var equipmentModels = await _context.EquipmentModels
+                .Include(e => e.Manufacturer)
+                .Include(e => e.Type)
+                .Where(e => request.EquipmentModelIds.Contains(e.Id))
+                .ToListAsync();
+
+            if (!equipmentModels.Any())
+                return NotFound(new { message = "Nie znaleziono wybranych modeli sprzętu." });
+
+            var fullContent = await _generationService.GenerateOPZContentAsync(equipmentModels, request.EquipmentType);
+            var title = $"OPZ - {request.EquipmentType}";
+            var pdfBytes = await _generationService.GenerateOPZPdfAsync(fullContent, title);
+            return File(pdfBytes, "application/pdf", $"OPZ_{DateTime.UtcNow:yyyyMMdd_HHmmss}.pdf");
         }
 
         // POST api/public/lead-capture
