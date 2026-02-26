@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { equipmentAPI, EquipmentModel } from '../../services/api';
+import { equipmentAPI, EquipmentModel, Manufacturer, EquipmentType } from '../../services/api';
 import { useKnowledgeBase } from '../../hooks/useKnowledgeBase';
+import { useAuth } from '../../hooks/useAuth';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import toast from 'react-hot-toast';
 
@@ -21,10 +22,22 @@ function formatFileSize(bytes: number): string {
 const EquipmentModelDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const modelId = Number(id);
+  const { user } = useAuth();
   const [model, setModel] = useState<EquipmentModel | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Edit state
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editMfr, setEditMfr] = useState(0);
+  const [editType, setEditType] = useState(0);
+  const [manufacturers, setManufacturers] = useState<Manufacturer[]>([]);
+  const [types, setTypes] = useState<EquipmentType[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  const isAdmin = user?.role === 'Admin';
 
   const {
     documents,
@@ -78,6 +91,44 @@ const EquipmentModelDetailPage: React.FC = () => {
     }
   };
 
+  const startEdit = async () => {
+    if (!model) return;
+    setEditName(model.modelName);
+    setEditMfr(model.manufacturerId);
+    setEditType(model.typeId);
+    try {
+      const [mfrs, tps] = await Promise.all([
+        equipmentAPI.getManufacturers(),
+        equipmentAPI.getTypes(),
+      ]);
+      setManufacturers(mfrs);
+      setTypes(tps);
+    } catch {
+      toast.error('Błąd podczas pobierania danych');
+      return;
+    }
+    setEditing(true);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!model) return;
+    setSaving(true);
+    try {
+      const updated = await equipmentAPI.updateModel(model.id, {
+        manufacturerId: editMfr,
+        typeId: editType,
+        modelName: editName,
+      });
+      setModel(updated);
+      setEditing(false);
+      toast.success('Model został zaktualizowany');
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Błąd podczas aktualizacji modelu');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (loading) return <LoadingSpinner message="Ładowanie modelu..." />;
   if (!model) return <p className="text-gray-500">Model nie został znaleziony.</p>;
 
@@ -95,11 +146,77 @@ const EquipmentModelDetailPage: React.FC = () => {
       </Link>
 
       <div className="bg-white rounded-lg border border-gray-200 p-6">
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">{model.modelName}</h1>
-        <div className="flex gap-4 text-sm text-gray-500 mb-6">
-          <span>Producent: <span className="font-medium text-gray-700">{model.manufacturerName}</span></span>
-          <span>Typ: <span className="font-medium text-gray-700">{model.typeName}</span></span>
-        </div>
+        {editing ? (
+          <div className="space-y-4 mb-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Nazwa modelu</label>
+              <input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Producent</label>
+                <select
+                  value={editMfr}
+                  onChange={(e) => setEditMfr(Number(e.target.value))}
+                  className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {manufacturers.map((m) => (
+                    <option key={m.id} value={m.id}>{m.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Typ sprzętu</label>
+                <select
+                  value={editType}
+                  onChange={(e) => setEditType(Number(e.target.value))}
+                  className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {types.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handleSaveEdit}
+                disabled={saving || !editName.trim()}
+                className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {saving ? 'Zapisywanie...' : 'Zapisz'}
+              </button>
+              <button
+                onClick={() => setEditing(false)}
+                className="px-4 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Anuluj
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="flex items-start justify-between mb-2">
+              <h1 className="text-2xl font-bold text-gray-900">{model.modelName}</h1>
+              {isAdmin && (
+                <button
+                  onClick={startEdit}
+                  className="px-3 py-1.5 text-sm text-indigo-600 border border-indigo-300 rounded-lg hover:bg-indigo-50"
+                >
+                  Edytuj
+                </button>
+              )}
+            </div>
+            <div className="flex gap-4 text-sm text-gray-500 mb-6">
+              <span>Producent: <span className="font-medium text-gray-700">{model.manufacturerName}</span></span>
+              <span>Typ: <span className="font-medium text-gray-700">{model.typeName}</span></span>
+            </div>
+          </>
+        )}
 
         <h2 className="text-lg font-semibold text-gray-900 mb-3">Specyfikacja techniczna</h2>
         {Object.keys(specs).length === 0 ? (

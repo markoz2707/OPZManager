@@ -22,5 +22,15 @@ namespace OPZManager.API.Services
         Task<bool> DeleteManufacturerAsync(int id);
         Task<bool> DeleteEquipmentTypeAsync(int id);
         Task<bool> DeleteEquipmentModelAsync(int id);
+        Task<EquipmentModel?> UpdateEquipmentModelAsync(int id, int manufacturerId, int typeId, string modelName);
+        Task<EquipmentPurgeResult> PurgeAllEquipmentDataAsync(bool deleteManufacturers = false, bool deleteTypes = false);
+    }
+
+    public class EquipmentPurgeResult
+    {
+        public int DeletedModels { get; set; }
+        public int DeletedKnowledgeDocuments { get; set; }
+        public int DeletedManufacturers { get; set; }
+        public int DeletedTypes { get; set; }
     }
 }

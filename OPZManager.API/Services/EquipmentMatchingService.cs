@@ -10,17 +10,20 @@ namespace OPZManager.API.Services
         private readonly ApplicationDbContext _context;
         private readonly IPllumIntegrationService _pllumService;
         private readonly IKnowledgeBaseService _knowledgeBaseService;
+        private readonly IConfiguration _configuration;
         private readonly ILogger<EquipmentMatchingService> _logger;
 
         public EquipmentMatchingService(
             ApplicationDbContext context,
             IPllumIntegrationService pllumService,
             IKnowledgeBaseService knowledgeBaseService,
+            IConfiguration configuration,
             ILogger<EquipmentMatchingService> logger)
         {
             _context = context;
             _pllumService = pllumService;
             _knowledgeBaseService = knowledgeBaseService;
+            _configuration = configuration;
             _logger = logger;
         }
 
@@ -70,7 +73,7 @@ namespace OPZManager.API.Services
                     var kbFragments = new List<KnowledgeSearchResult>();
                     try
                     {
-                        kbFragments = await _knowledgeBaseService.SearchAsync(equipment.Id, requirementsText, topK: 3);
+                        kbFragments = await _knowledgeBaseService.SearchAsync(equipment.Id, requirementsText, topK: 10);
                     }
                     catch (Exception ex)
                     {
@@ -127,7 +130,7 @@ namespace OPZManager.API.Services
                             {
                                 RequirementId = r.RequirementId,
                                 Status = r.Status,
-                                Explanation = r.Status == "met" ? null : r.Explanation
+                                Explanation = r.Explanation
                             }).ToList();
                     }
                 }
@@ -331,6 +334,29 @@ namespace OPZManager.API.Services
             return true;
         }
 
+        public async Task<EquipmentModel?> UpdateEquipmentModelAsync(int id, int manufacturerId, int typeId, string modelName)
+        {
+            var model = await _context.EquipmentModels
+                .Include(e => e.Manufacturer)
+                .Include(e => e.Type)
+                .FirstOrDefaultAsync(e => e.Id == id);
+
+            if (model == null)
+                return null;
+
+            model.ManufacturerId = manufacturerId;
+            model.TypeId = typeId;
+            model.ModelName = modelName;
+            model.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            return await _context.EquipmentModels
+                .Include(e => e.Manufacturer)
+                .Include(e => e.Type)
+                .FirstOrDefaultAsync(e => e.Id == id);
+        }
+
         private decimal CalculateRequirementMatch(EquipmentModel equipment, OPZRequirement requirement)
         {
             var score = 0m;
@@ -423,6 +449,58 @@ namespace OPZManager.API.Services
             }
 
             return score;
+        }
+
+        public async Task<EquipmentPurgeResult> PurgeAllEquipmentDataAsync(bool deleteManufacturers = false, bool deleteTypes = false)
+        {
+            var result = new EquipmentPurgeResult();
+
+            // Count knowledge documents before deletion (cascade will remove them)
+            result.DeletedKnowledgeDocuments = await _context.KnowledgeDocuments.CountAsync();
+
+            // Delete all equipment models (cascades to: KnowledgeDocuments → KnowledgeChunks, EquipmentMatches → RequirementCompliances)
+            var models = await _context.EquipmentModels.ToListAsync();
+            result.DeletedModels = models.Count;
+            _context.EquipmentModels.RemoveRange(models);
+            await _context.SaveChangesAsync();
+
+            // Clean up physical knowledge base files
+            var knowledgeBasePath = _configuration["FileStorage:KnowledgeBasePath"] ?? "KnowledgeBase";
+            if (Directory.Exists(knowledgeBasePath))
+            {
+                try
+                {
+                    Directory.Delete(knowledgeBasePath, recursive: true);
+                    Directory.CreateDirectory(knowledgeBasePath);
+                    _logger.LogInformation("Cleaned knowledge base directory: {Path}", knowledgeBasePath);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to clean knowledge base directory: {Path}", knowledgeBasePath);
+                }
+            }
+
+            if (deleteManufacturers)
+            {
+                var manufacturers = await _context.Manufacturers.ToListAsync();
+                result.DeletedManufacturers = manufacturers.Count;
+                _context.Manufacturers.RemoveRange(manufacturers);
+                await _context.SaveChangesAsync();
+            }
+
+            if (deleteTypes)
+            {
+                var types = await _context.EquipmentTypes.ToListAsync();
+                result.DeletedTypes = types.Count;
+                _context.EquipmentTypes.RemoveRange(types);
+                await _context.SaveChangesAsync();
+            }
+
+            _logger.LogInformation(
+                "Equipment purge complete: {Models} models, {KnowledgeDocs} knowledge docs, {Mfrs} manufacturers, {Types} types deleted",
+                result.DeletedModels, result.DeletedKnowledgeDocuments, result.DeletedManufacturers, result.DeletedTypes);
+
+            return result;
         }
     }
 }

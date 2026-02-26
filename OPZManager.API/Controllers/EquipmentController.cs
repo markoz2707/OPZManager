@@ -15,11 +15,16 @@ namespace OPZManager.API.Controllers
     public class EquipmentController : ControllerBase
     {
         private readonly IEquipmentMatchingService _equipmentMatchingService;
+        private readonly IFolderImportService _folderImportService;
         private readonly IMapper _mapper;
 
-        public EquipmentController(IEquipmentMatchingService equipmentMatchingService, IMapper mapper)
+        public EquipmentController(
+            IEquipmentMatchingService equipmentMatchingService,
+            IFolderImportService folderImportService,
+            IMapper mapper)
         {
             _equipmentMatchingService = equipmentMatchingService;
+            _folderImportService = folderImportService;
             _mapper = mapper;
         }
 
@@ -83,6 +88,17 @@ namespace OPZManager.API.Controllers
             return CreatedAtAction(nameof(GetModels), new { id = created.Id }, _mapper.Map<EquipmentModelDto>(loaded));
         }
 
+        [HttpPut("models/{id}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<EquipmentModelDto>> UpdateModel(int id, [FromBody] UpdateEquipmentModelDto dto)
+        {
+            var updated = await _equipmentMatchingService.UpdateEquipmentModelAsync(id, dto.ManufacturerId, dto.TypeId, dto.ModelName);
+            if (updated == null)
+                throw new NotFoundException("Model", id);
+
+            return Ok(_mapper.Map<EquipmentModelDto>(updated));
+        }
+
         [HttpDelete("manufacturers/{id}")]
         [Authorize(Roles = "Admin")]
         public async Task<ActionResult<object>> DeleteManufacturer(int id)
@@ -114,6 +130,52 @@ namespace OPZManager.API.Controllers
                 throw new NotFoundException("Model", id);
 
             return Ok(new { message = "Model został usunięty." });
+        }
+
+        [HttpDelete("purge")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<object>> PurgeAllEquipmentData([FromQuery] bool deleteManufacturers = false, [FromQuery] bool deleteTypes = false)
+        {
+            var result = await _equipmentMatchingService.PurgeAllEquipmentDataAsync(deleteManufacturers, deleteTypes);
+
+            return Ok(new
+            {
+                message = "Baza sprzętu została wyczyszczona.",
+                deletedModels = result.DeletedModels,
+                deletedKnowledgeDocuments = result.DeletedKnowledgeDocuments,
+                deletedManufacturers = result.DeletedManufacturers,
+                deletedTypes = result.DeletedTypes
+            });
+        }
+
+        [HttpPost("import-folder")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<FolderImportResultDto>> ImportFolder([FromBody] ImportFolderRequestDto dto)
+        {
+            var folderPath = string.IsNullOrWhiteSpace(dto.FolderPath) ? @"I:\AI_OPZ\IMPORT" : dto.FolderPath;
+
+            if (!Directory.Exists(folderPath))
+                throw new BusinessRuleException($"Folder nie istnieje: {folderPath}");
+
+            var result = await _folderImportService.ImportFromFolderAsync(folderPath);
+
+            return Ok(new FolderImportResultDto
+            {
+                TotalFiles = result.TotalFiles,
+                CreatedModels = result.CreatedModels,
+                UploadedDocuments = result.UploadedDocuments,
+                SkippedFiles = result.SkippedFiles,
+                Errors = result.Errors,
+                Items = result.Items.Select(i => new ImportedItemDto
+                {
+                    ManufacturerName = i.ManufacturerName,
+                    TypeName = i.TypeName,
+                    ModelName = i.ModelName,
+                    Filename = i.Filename,
+                    Status = i.Status,
+                    ErrorMessage = i.ErrorMessage
+                }).ToList()
+            });
         }
     }
 }

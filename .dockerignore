@@ -1,0 +1,39 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# .NET build artifacts
+**/bin/
+**/obj/
+
+# Node
+**/node_modules/
+opz-manager-ui/build/
+
+# Uploads & generated files
+Documents/
+/OPZ/
+uploads/
+build-temp/
+
+# Docker env (secrets)
+.env.docker
+
+# Claude Code
+.claude/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Legacy / temp
+input/
+output/
+*.jsonl

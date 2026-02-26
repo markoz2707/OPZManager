@@ -9,7 +9,7 @@ function stripDevicePrefix(text: string): string {
   return text.replace(/^\[[^\]]+\]\s*/, '');
 }
 
-/** Status cell component with color and tooltip */
+/** Status cell component with color and tooltip showing KB citations */
 const ComplianceCell: React.FC<{ compliance: RequirementCompliance | undefined }> = ({ compliance }) => {
   const [showTooltip, setShowTooltip] = useState(false);
 
@@ -27,17 +27,22 @@ const ComplianceCell: React.FC<{ compliance: RequirementCompliance | undefined }
     not_met: { bg: 'bg-red-100', text: 'text-red-800', icon: '✗', label: 'Nie spełnia' },
   }[compliance.status] ?? { bg: 'bg-gray-50', text: 'text-gray-400', icon: '—', label: '' };
 
-  const hasExplanation = compliance.explanation && compliance.status !== 'met';
+  const hasExplanation = !!compliance.explanation;
 
   return (
     <td
-      className={`px-3 py-2 text-center ${config.bg} ${config.text} text-xs font-medium border border-gray-200 relative`}
+      className={`px-3 py-2 text-center ${config.bg} ${config.text} text-xs font-medium border border-gray-200 relative cursor-default`}
       onMouseEnter={() => hasExplanation && setShowTooltip(true)}
       onMouseLeave={() => setShowTooltip(false)}
     >
       <span>{config.icon}</span>
       {showTooltip && hasExplanation && (
-        <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-2 bg-gray-900 text-white text-xs rounded shadow-lg pointer-events-none">
+        <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 w-80 p-3 bg-gray-900 text-white text-xs rounded-lg shadow-xl pointer-events-none whitespace-pre-line leading-relaxed">
+          <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold mb-1.5 ${
+            compliance.status === 'met' ? 'bg-green-600' :
+            compliance.status === 'partial' ? 'bg-yellow-600' : 'bg-red-600'
+          }`}>{config.label}</span>
+          <br />
           {compliance.explanation}
           <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-900" />
         </div>

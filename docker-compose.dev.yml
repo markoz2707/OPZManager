@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    env_file: .env.docker
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-opzdb}
+      POSTGRES_USER: ${POSTGRES_USER:-opzuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opzpassword}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-opzuser} -d ${POSTGRES_DB:-opzdb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./OPZManager.API
+      dockerfile: Dockerfile
+      target: build
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env.docker
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      DOTNET_USE_POLLING_FILE_WATCHER: "true"
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=${POSTGRES_DB:-opzdb};Username=${POSTGRES_USER:-opzuser};Password=${POSTGRES_PASSWORD:-opzpassword}"
+      JwtSettings__SecretKey: ${JWT_SECRET_KEY:-YourSuperSecretKeyThatIsAtLeast32CharactersLong!}
+      JwtSettings__ExpirationHours: ${JWT_EXPIRATION_HOURS:-24}
+      LlmSettings__Provider: ${LLM_PROVIDER:-local}
+      LlmSettings__Local__BaseUrl: ${LLM_LOCAL_BASE_URL:-https://api.mistral.ai/v1/}
+      LlmSettings__Local__ApiKey: ${LLM_LOCAL_API_KEY:-}
+      LlmSettings__Local__ModelName: ${LLM_LOCAL_MODEL_NAME:-mistral-large-2407}
+      EmbeddingSettings__Provider: ${EMBEDDING_PROVIDER:-mistral}
+      EmbeddingSettings__Mistral__BaseUrl: ${EMBEDDING_MISTRAL_BASE_URL:-https://api.mistral.ai/v1/}
+      EmbeddingSettings__Mistral__ApiKey: ${EMBEDDING_MISTRAL_API_KEY:-}
+      EmbeddingSettings__Mistral__ModelName: ${EMBEDDING_MISTRAL_MODEL_NAME:-mistral-embed}
+      EmbeddingSettings__Mistral__Dimensions: ${EMBEDDING_MISTRAL_DIMENSIONS:-1024}
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./OPZManager.API:/src
+    working_dir: /src
+    entrypoint: ["dotnet", "watch", "run", "--urls", "http://+:5000"]
+
+  frontend:
+    image: node:20-alpine
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./opz-manager-ui:/app
+      - frontend_node_modules:/app/node_modules
+    working_dir: /app
+    environment:
+      REACT_APP_API_URL: http://localhost:5000/api
+      WATCHPACK_POLLING: "true"
+    entrypoint: ["sh", "-c", "npm install && npm start"]
+
+volumes:
+  postgres_dev_data:
+  frontend_node_modules:

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { equipmentAPI, Manufacturer, EquipmentType, EquipmentModel } from '../services/api';
+import { equipmentAPI, Manufacturer, EquipmentType, EquipmentModel, FolderImportResult } from '../services/api';
 import toast from 'react-hot-toast';
 
 export function useEquipment() {
@@ -76,10 +76,36 @@ export function useEquipment() {
     }
   };
 
+  const updateModel = async (id: number, data: { manufacturerId: number; typeId: number; modelName: string }) => {
+    await equipmentAPI.updateModel(id, data);
+    toast.success('Model został zaktualizowany');
+    fetchAll();
+  };
+
+  const importFolder = async (folderPath: string): Promise<FolderImportResult> => {
+    const result = await equipmentAPI.importFolder(folderPath);
+    toast.success(`Import zakończony: ${result.createdModels} nowych modeli, ${result.uploadedDocuments} dokumentów`);
+    fetchAll();
+    return result;
+  };
+
+  const purgeAll = async (deleteManufacturers = false, deleteTypes = false) => {
+    try {
+      const result = await equipmentAPI.purgeAll(deleteManufacturers, deleteTypes);
+      toast.success(`Wyczyszczono: ${result.deletedModels} modeli, ${result.deletedKnowledgeDocuments} dokumentów wiedzy`);
+      fetchAll();
+      return result;
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Błąd podczas czyszczenia bazy sprzętu');
+      throw err;
+    }
+  };
+
   return {
     manufacturers, types, models, loading,
     refresh: fetchAll,
     createManufacturer, createType, createModel,
     deleteManufacturer, deleteType, deleteModel,
+    updateModel, importFolder, purgeAll,
   };
 }

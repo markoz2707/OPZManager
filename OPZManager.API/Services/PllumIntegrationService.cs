@@ -421,8 +421,18 @@ Wyodrębnij wszystkie parametry techniczne: procesor, pamięć, dyski, RAID, sie
                 if (!jsonMatch.Success)
                     return new Dictionary<string, string>();
 
-                var result = JsonSerializer.Deserialize<Dictionary<string, string>>(jsonMatch.Value);
-                return result ?? new Dictionary<string, string>();
+                // LLM may return nested objects/arrays — flatten all values to strings
+                using var doc = JsonDocument.Parse(jsonMatch.Value);
+                var result = new Dictionary<string, string>();
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    result[prop.Name] = prop.Value.ValueKind switch
+                    {
+                        JsonValueKind.String => prop.Value.GetString() ?? "",
+                        _ => prop.Value.GetRawText()
+                    };
+                }
+                return result;
             }
             catch (Exception ex)
             {
@@ -451,11 +461,20 @@ DODATKOWE INFORMACJE Z DOKUMENTACJI SPRZĘTU:
 
 Dla KAŻDEGO wymagania oceń:
 - ""met"" — sprzęt w pełni spełnia wymaganie
-- ""partial"" — sprzęt częściowo spełnia lub są wątpliwości
+- ""partial"" — sprzęt częściowo spełnia, są wątpliwości, lub spełnia ale z zastrzeżeniami (np. droższy wariant, nadmiarowa konfiguracja)
 - ""not_met"" — sprzęt nie spełnia wymagania
 - ""not_applicable"" — wymaganie dotyczy innego typu urządzenia
 
-WAŻNE: Jeśli wymaganie dotyczy innego urządzenia niż oceniany sprzęt (np. wymaganie dot. macierzy a oceniany sprzęt to serwer), ustaw status ""not_applicable"".
+WAŻNE ZASADY:
+1. Jeśli wymaganie dotyczy innego urządzenia niż oceniany sprzęt (np. wymaganie dot. macierzy a oceniany sprzęt to serwer), ustaw status ""not_applicable"".
+2. W polu ""explanation"" ZAWSZE podaj KONKRETNE CYTATY z dokumentacji sprzętu (sekcja ""DODATKOWE INFORMACJE"") jako dowód. Cytuj dosłownie fragmenty dokumentacji w cudzysłowie.
+3. Jeśli wymaganie da się spełnić ale w droższej konfiguracji niż wymagana (np. wymagane 768GB RAM ale minimalna możliwa konfiguracja z wymaganych modułów to 1024GB), ustaw ""partial"" i wyjaśnij dlaczego.
+4. Jeśli brak informacji w dokumentacji na temat danego wymagania, napisz to wprost.
+
+FORMAT EXPLANATION:
+- Dla ""met"": cytat z dokumentacji potwierdzający spełnienie, np. ""Dokumentacja: «16 DDR5 DIMM slots, speeds up to 6400 MT/s» — spełnia wymaganie min. 5600 MT/s.""
+- Dla ""partial"": cytat + wyjaśnienie wątpliwości, np. ""Dokumentacja: «Memory population: 1, 4, 8, or 16 DIMMs» — z modułów 64GB nie da się złożyć 768GB (64×12), minimalna konfiguracja spełniająca wymaganie to 64GB×16=1024GB, co jest droższe.""
+- Dla ""not_met"": cytat lub brak informacji + uzasadnienie
 
 Oceń też ogólną zgodność w skali 0-100 (uwzględniając TYLKO wymagania które mają status met/partial/not_met).
 
@@ -464,7 +483,7 @@ Zwróć TYLKO obiekt JSON:
   ""overallScore"": <0-100>,
   ""overallExplanation"": ""<krótkie uzasadnienie po polsku, max 500 znaków>"",
   ""requirements"": [
-    {{""requirementId"": <ID>, ""status"": ""met|partial|not_met|not_applicable"", ""explanation"": ""<krótkie uzasadnienie>""}},
+    {{""requirementId"": <ID>, ""status"": ""met|partial|not_met|not_applicable"", ""explanation"": ""<cytat z dokumentacji + uzasadnienie>""}},
     ...
   ]
 }}";

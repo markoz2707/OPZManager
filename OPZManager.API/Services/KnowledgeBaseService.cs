@@ -16,7 +16,7 @@ namespace OPZManager.API.Services
         private readonly IPllumIntegrationService _pllumService;
         private readonly IConfiguration _configuration;
         private readonly ILogger<KnowledgeBaseService> _logger;
-        private readonly IServiceScopeFactory _scopeFactory;
+        private readonly IDocumentProcessingQueue _processingQueue;
 
         public KnowledgeBaseService(
             ApplicationDbContext context,
@@ -25,7 +25,7 @@ namespace OPZManager.API.Services
             IPllumIntegrationService pllumService,
             IConfiguration configuration,
             ILogger<KnowledgeBaseService> logger,
-            IServiceScopeFactory scopeFactory)
+            IDocumentProcessingQueue processingQueue)
         {
             _context = context;
             _pdfService = pdfService;
@@ -33,7 +33,7 @@ namespace OPZManager.API.Services
             _pllumService = pllumService;
             _configuration = configuration;
             _logger = logger;
-            _scopeFactory = scopeFactory;
+            _processingQueue = processingQueue;
         }
 
         public async Task<KnowledgeDocument> UploadDocumentAsync(int equipmentModelId, Stream fileStream, string filename)
@@ -65,14 +65,8 @@ namespace OPZManager.API.Services
             _context.KnowledgeDocuments.Add(document);
             await _context.SaveChangesAsync();
 
-            // Start processing in background
-            var documentId = document.Id;
-            _ = Task.Run(async () =>
-            {
-                using var scope = _scopeFactory.CreateScope();
-                var service = scope.ServiceProvider.GetRequiredService<IKnowledgeBaseService>();
-                await service.ProcessDocumentAsync(documentId);
-            });
+            // Enqueue for sequential background processing (rate-limit safe)
+            _processingQueue.Enqueue(document.Id);
 
             return document;
         }

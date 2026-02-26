@@ -59,7 +59,7 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowReactApp", policy =>
     {
-        policy.WithOrigins("http://localhost:3000", "http://localhost:5173")
+        policy.WithOrigins("http://localhost:3000", "http://localhost:5173", "http://localhost")
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials();
@@ -83,6 +83,7 @@ builder.Services.AddScoped<ITrainingDataService, TrainingDataService>();
 builder.Services.AddScoped<IOPZVerificationService, OPZVerificationService>();
 builder.Services.AddScoped<ILeadCaptureService, LeadCaptureService>();
 builder.Services.AddScoped<PythonPdfProcessingService>();
+builder.Services.AddScoped<IFolderImportService, FolderImportService>();
 
 // Configure LLM Provider based on settings
 var llmProvider = builder.Configuration["LlmSettings:Provider"] ?? "local";
@@ -126,8 +127,16 @@ switch (embeddingProvider.ToLower())
         break;
 }
 
+// Register document processing queue (singleton background service)
+builder.Services.AddSingleton<DocumentProcessingQueue>();
+builder.Services.AddSingleton<IDocumentProcessingQueue>(sp => sp.GetRequiredService<DocumentProcessingQueue>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DocumentProcessingQueue>());
+
 // Register Knowledge Base service
 builder.Services.AddScoped<IKnowledgeBaseService, KnowledgeBaseService>();
+
+// Register Folder Import service
+builder.Services.AddScoped<IFolderImportService, FolderImportService>();
 
 // Rate Limiting
 builder.Services.AddRateLimiter(options =>

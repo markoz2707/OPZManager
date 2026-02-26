@@ -49,47 +49,81 @@ namespace OPZManager.API.Services.Embeddings
 
         public async Task<float[][]> GenerateEmbeddingsAsync(IList<string> texts)
         {
-            var requestBody = new
+            const int maxRetries = 5;
+
+            for (int attempt = 0; attempt <= maxRetries; attempt++)
             {
-                model = _modelName,
-                input = texts
-            };
-
-            var json = JsonSerializer.Serialize(requestBody);
-            var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-            var response = await _httpClient.PostAsync("embeddings", content);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                var errorBody = await response.Content.ReadAsStringAsync();
-                _logger.LogError("OpenAI-Compatible Embedding API request failed: {StatusCode} - {Error}", response.StatusCode, errorBody);
-                throw new HttpRequestException($"Embedding API request failed: {response.StatusCode}");
-            }
-
-            var responseJson = await response.Content.ReadAsStringAsync();
-            var responseObj = JsonSerializer.Deserialize<JsonElement>(responseJson);
-
-            if (!responseObj.TryGetProperty("data", out var data))
-            {
-                throw new InvalidOperationException("Invalid response format from Embedding API: missing 'data'");
-            }
-
-            var embeddings = new float[texts.Count][];
-            foreach (var item in data.EnumerateArray())
-            {
-                var index = item.GetProperty("index").GetInt32();
-                var embedding = item.GetProperty("embedding");
-                var values = new float[embedding.GetArrayLength()];
-                var i = 0;
-                foreach (var val in embedding.EnumerateArray())
+                var requestBody = new
                 {
-                    values[i++] = val.GetSingle();
+                    model = _modelName,
+                    input = texts
+                };
+
+                var json = JsonSerializer.Serialize(requestBody);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+                var response = await _httpClient.PostAsync("embeddings", content);
+
+                if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    if (attempt == maxRetries)
+                    {
+                        var errorBody = await response.Content.ReadAsStringAsync();
+                        _logger.LogError("Embedding API rate limit exceeded after {MaxRetries} retries: {Error}", maxRetries, errorBody);
+                        throw new HttpRequestException($"Embedding API rate limit exceeded after {maxRetries} retries");
+                    }
+
+                    var delay = GetRetryDelay(response, attempt);
+                    _logger.LogWarning("Embedding API rate limited (429), retry {Attempt}/{MaxRetries} after {Delay}ms", attempt + 1, maxRetries, delay.TotalMilliseconds);
+                    await Task.Delay(delay);
+                    continue;
                 }
-                embeddings[index] = values;
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorBody = await response.Content.ReadAsStringAsync();
+                    _logger.LogError("OpenAI-Compatible Embedding API request failed: {StatusCode} - {Error}", response.StatusCode, errorBody);
+                    throw new HttpRequestException($"Embedding API request failed: {response.StatusCode}");
+                }
+
+                var responseJson = await response.Content.ReadAsStringAsync();
+                var responseObj = JsonSerializer.Deserialize<JsonElement>(responseJson);
+
+                if (!responseObj.TryGetProperty("data", out var data))
+                {
+                    throw new InvalidOperationException("Invalid response format from Embedding API: missing 'data'");
+                }
+
+                var embeddings = new float[texts.Count][];
+                foreach (var item in data.EnumerateArray())
+                {
+                    var index = item.GetProperty("index").GetInt32();
+                    var embedding = item.GetProperty("embedding");
+                    var values = new float[embedding.GetArrayLength()];
+                    var i = 0;
+                    foreach (var val in embedding.EnumerateArray())
+                    {
+                        values[i++] = val.GetSingle();
+                    }
+                    embeddings[index] = values;
+                }
+
+                return embeddings;
             }
 
-            return embeddings;
+            throw new HttpRequestException("Embedding API request failed after all retries");
+        }
+
+        private static TimeSpan GetRetryDelay(HttpResponseMessage response, int attempt)
+        {
+            if (response.Headers.TryGetValues("Retry-After", out var values))
+            {
+                var retryAfter = values.FirstOrDefault();
+                if (int.TryParse(retryAfter, out var seconds))
+                    return TimeSpan.FromSeconds(seconds);
+            }
+            // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+            return TimeSpan.FromSeconds(Math.Pow(2, attempt));
         }
 
         public async Task<bool> TestConnectionAsync()

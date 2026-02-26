@@ -26,8 +26,14 @@ uploads/
 Documents/
 /OPZ/
 
+# Docker env (secrets)
+.env.docker
+
 # Legacy / temp
 input/
 output/
 app.py
 task-desc-*.txt
+
+build-temp/
+KnowledgeBase/

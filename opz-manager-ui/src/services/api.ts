@@ -162,6 +162,24 @@ export interface KnowledgeSearchResult {
   chunkIndex: number;
 }
 
+export interface FolderImportResult {
+  totalFiles: number;
+  createdModels: number;
+  uploadedDocuments: number;
+  skippedFiles: number;
+  errors: number;
+  items: ImportedItem[];
+}
+
+export interface ImportedItem {
+  manufacturerName: string;
+  typeName: string;
+  modelName: string;
+  filename: string;
+  status: string;
+  errorMessage: string | null;
+}
+
 export interface ConfigStatus {
   llmConnected: boolean;
   llmBaseUrl: string;
@@ -248,6 +266,18 @@ export const equipmentAPI = {
   },
   deleteModel: async (id: number): Promise<void> => {
     await api.delete(`/equipment/models/${id}`);
+  },
+  updateModel: async (id: number, data: { manufacturerId: number; typeId: number; modelName: string }): Promise<EquipmentModel> => {
+    const response = await api.put(`/equipment/models/${id}`, data);
+    return response.data;
+  },
+  importFolder: async (folderPath: string): Promise<FolderImportResult> => {
+    const response = await api.post('/equipment/import-folder', { folderPath }, { timeout: 600000 });
+    return response.data;
+  },
+  purgeAll: async (deleteManufacturers = false, deleteTypes = false): Promise<{ message: string; deletedModels: number; deletedKnowledgeDocuments: number; deletedManufacturers: number; deletedTypes: number }> => {
+    const response = await api.delete('/equipment/purge', { params: { deleteManufacturers, deleteTypes } });
+    return response.data;
   },
 };
 

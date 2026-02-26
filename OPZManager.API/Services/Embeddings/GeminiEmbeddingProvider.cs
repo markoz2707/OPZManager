@@ -31,45 +31,78 @@ namespace OPZManager.API.Services.Embeddings
 
         public async Task<float[]> GenerateEmbeddingAsync(string text)
         {
-            var url = $"https://generativelanguage.googleapis.com/v1beta/models/{_modelName}:embedContent?key={_apiKey}";
+            const int maxRetries = 5;
 
-            var requestBody = new
+            for (int attempt = 0; attempt <= maxRetries; attempt++)
             {
-                model = $"models/{_modelName}",
-                content = new
+                var url = $"https://generativelanguage.googleapis.com/v1beta/models/{_modelName}:embedContent?key={_apiKey}";
+
+                var requestBody = new
                 {
-                    parts = new[] { new { text } }
+                    model = $"models/{_modelName}",
+                    content = new
+                    {
+                        parts = new[] { new { text } }
+                    }
+                };
+
+                var json = JsonSerializer.Serialize(requestBody);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+                var response = await _httpClient.PostAsync(url, content);
+
+                if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    if (attempt == maxRetries)
+                    {
+                        var errorBody = await response.Content.ReadAsStringAsync();
+                        _logger.LogError("Gemini Embedding API rate limit exceeded after {MaxRetries} retries: {Error}", maxRetries, errorBody);
+                        throw new HttpRequestException($"Gemini Embedding API rate limit exceeded after {maxRetries} retries");
+                    }
+
+                    var delay = GetRetryDelay(response, attempt);
+                    _logger.LogWarning("Gemini Embedding API rate limited (429), retry {Attempt}/{MaxRetries} after {Delay}ms", attempt + 1, maxRetries, delay.TotalMilliseconds);
+                    await Task.Delay(delay);
+                    continue;
                 }
-            };
 
-            var json = JsonSerializer.Serialize(requestBody);
-            var content = new StringContent(json, Encoding.UTF8, "application/json");
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorBody = await response.Content.ReadAsStringAsync();
+                    _logger.LogError("Gemini Embedding API request failed: {StatusCode} - {Error}", response.StatusCode, errorBody);
+                    throw new HttpRequestException($"Gemini Embedding API request failed: {response.StatusCode}");
+                }
 
-            var response = await _httpClient.PostAsync(url, content);
+                var responseJson = await response.Content.ReadAsStringAsync();
+                var responseObj = JsonSerializer.Deserialize<JsonElement>(responseJson);
 
-            if (!response.IsSuccessStatusCode)
-            {
-                var errorBody = await response.Content.ReadAsStringAsync();
-                _logger.LogError("Gemini Embedding API request failed: {StatusCode} - {Error}", response.StatusCode, errorBody);
-                throw new HttpRequestException($"Gemini Embedding API request failed: {response.StatusCode}");
+                if (responseObj.TryGetProperty("embedding", out var embedding) &&
+                    embedding.TryGetProperty("values", out var values))
+                {
+                    var result = new float[values.GetArrayLength()];
+                    var i = 0;
+                    foreach (var val in values.EnumerateArray())
+                    {
+                        result[i++] = val.GetSingle();
+                    }
+                    return result;
+                }
+
+                throw new InvalidOperationException("Invalid response format from Gemini Embedding API");
             }
 
-            var responseJson = await response.Content.ReadAsStringAsync();
-            var responseObj = JsonSerializer.Deserialize<JsonElement>(responseJson);
+            throw new HttpRequestException("Gemini Embedding API request failed after all retries");
+        }
 
-            if (responseObj.TryGetProperty("embedding", out var embedding) &&
-                embedding.TryGetProperty("values", out var values))
+        private static TimeSpan GetRetryDelay(HttpResponseMessage response, int attempt)
+        {
+            if (response.Headers.TryGetValues("Retry-After", out var values))
             {
-                var result = new float[values.GetArrayLength()];
-                var i = 0;
-                foreach (var val in values.EnumerateArray())
-                {
-                    result[i++] = val.GetSingle();
-                }
-                return result;
+                var retryAfter = values.FirstOrDefault();
+                if (int.TryParse(retryAfter, out var seconds))
+                    return TimeSpan.FromSeconds(seconds);
             }
-
-            throw new InvalidOperationException("Invalid response format from Gemini Embedding API");
+            return TimeSpan.FromSeconds(Math.Pow(2, attempt));
         }
 
         public async Task<float[][]> GenerateEmbeddingsAsync(IList<string> texts)
