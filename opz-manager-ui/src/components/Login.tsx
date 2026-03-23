@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { authAPI, LoginRequest } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 
@@ -97,8 +97,14 @@ const Login: React.FC = () => {
             </button>
           </div>
 
-          <div className="text-center">
+          <div className="text-center space-y-2">
             <p className="text-sm text-gray-600">
+              Nie masz konta?{' '}
+              <Link to="/register" className="font-medium text-indigo-600 hover:text-indigo-500">
+                Zarejestruj się
+              </Link>
+            </p>
+            <p className="text-xs text-gray-400">
               Domyślne konto: admin / admin123
             </p>
           </div>

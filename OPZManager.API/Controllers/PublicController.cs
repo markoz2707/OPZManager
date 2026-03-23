@@ -24,6 +24,7 @@ namespace OPZManager.API.Controllers
         private readonly IEquipmentMatchingService _equipmentMatchingService;
         private readonly IOPZGenerationService _generationService;
         private readonly ILeadCaptureService _leadCaptureService;
+        private readonly IDocxExportService _docxExportService;
         private readonly IMapper _mapper;
         private readonly ILogger<PublicController> _logger;
 
@@ -34,6 +35,7 @@ namespace OPZManager.API.Controllers
             IEquipmentMatchingService equipmentMatchingService,
             IOPZGenerationService generationService,
             ILeadCaptureService leadCaptureService,
+            IDocxExportService docxExportService,
             IMapper mapper,
             ILogger<PublicController> logger)
         {
@@ -43,6 +45,7 @@ namespace OPZManager.API.Controllers
             _equipmentMatchingService = equipmentMatchingService;
             _generationService = generationService;
             _leadCaptureService = leadCaptureService;
+            _docxExportService = docxExportService;
             _mapper = mapper;
             _logger = logger;
         }
@@ -334,6 +337,110 @@ namespace OPZManager.API.Controllers
         {
             var manufacturers = await _context.Manufacturers.OrderBy(m => m.Name).ToListAsync();
             return Ok(_mapper.Map<List<ManufacturerDto>>(manufacturers));
+        }
+
+        // POST api/public/generate/docx — requires JWT
+        [Authorize]
+        [HttpPost("generate/docx")]
+        public async Task<IActionResult> GenerateAuthorizedDocx([FromBody] GenerateOPZContentRequestDto request)
+        {
+            var equipmentModels = await _context.EquipmentModels
+                .Include(e => e.Manufacturer)
+                .Include(e => e.Type)
+                .Where(e => request.EquipmentModelIds.Contains(e.Id))
+                .ToListAsync();
+
+            if (!equipmentModels.Any())
+                return NotFound(new { message = "Nie znaleziono wybranych modeli sprzętu." });
+
+            var fullContent = await _generationService.GenerateOPZContentAsync(equipmentModels, request.EquipmentType);
+            var title = $"OPZ - {request.EquipmentType}";
+            var docxBytes = await _docxExportService.GenerateDocxAsync(fullContent, title);
+            return File(docxBytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                $"OPZ_{DateTime.UtcNow:yyyyMMdd_HHmmss}.docx");
+        }
+
+        // POST api/public/download/docx — with lead capture token
+        [HttpPost("download/docx")]
+        public async Task<IActionResult> DownloadDocx([FromBody] DownloadRequestDto request)
+        {
+            var lead = await _leadCaptureService.ValidateDownloadTokenAsync(request.DownloadToken);
+            if (lead == null)
+                return Unauthorized(new { message = "Nieprawidłowy lub wygasły token pobierania." });
+
+            var docxBytes = await _docxExportService.GenerateDocxAsync(request.Content, request.Title);
+            return File(docxBytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                $"OPZ_{DateTime.UtcNow:yyyyMMdd_HHmmss}.docx");
+        }
+
+        // GET api/public/equipment/models/search
+        [HttpGet("equipment/models/search")]
+        public async Task<ActionResult> SearchModels(
+            [FromQuery] string? q = null,
+            [FromQuery] int? typeId = null,
+            [FromQuery] int? manufacturerId = null,
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 20)
+        {
+            var query = _context.EquipmentModels
+                .Include(m => m.Manufacturer)
+                .Include(m => m.Type)
+                .AsQueryable();
+
+            if (!string.IsNullOrWhiteSpace(q))
+                query = query.Where(m => m.ModelName.Contains(q) || m.Manufacturer.Name.Contains(q) || m.SpecificationsJson!.Contains(q));
+            if (typeId.HasValue)
+                query = query.Where(m => m.TypeId == typeId.Value);
+            if (manufacturerId.HasValue)
+                query = query.Where(m => m.ManufacturerId == manufacturerId.Value);
+
+            var total = await query.CountAsync();
+            var items = await query
+                .OrderBy(m => m.Manufacturer.Name).ThenBy(m => m.ModelName)
+                .Skip((page - 1) * pageSize).Take(pageSize)
+                .ToListAsync();
+
+            return Ok(new { items = _mapper.Map<List<EquipmentModelDto>>(items), totalCount = total, page, pageSize });
+        }
+
+        // GET api/public/equipment/models/{id}
+        [HttpGet("equipment/models/{id}")]
+        public async Task<ActionResult<EquipmentModelDto>> GetModelDetail(int id)
+        {
+            var model = await _context.EquipmentModels
+                .Include(m => m.Manufacturer)
+                .Include(m => m.Type)
+                .FirstOrDefaultAsync(m => m.Id == id);
+
+            if (model == null)
+                return NotFound(new { message = "Model nie został znaleziony." });
+
+            return Ok(_mapper.Map<EquipmentModelDto>(model));
+        }
+
+        // POST api/public/equipment/models/compare
+        [HttpPost("equipment/models/compare")]
+        public async Task<ActionResult> CompareModels([FromBody] CompareModelsRequestDto request)
+        {
+            if (request.ModelIds == null || request.ModelIds.Count < 2 || request.ModelIds.Count > 5)
+                return BadRequest(new { message = "Wybierz od 2 do 5 modeli do porównania." });
+
+            var models = await _context.EquipmentModels
+                .Include(m => m.Manufacturer)
+                .Include(m => m.Type)
+                .Where(m => request.ModelIds.Contains(m.Id))
+                .ToListAsync();
+
+            var result = models.Select(m => new
+            {
+                m.Id,
+                m.ModelName,
+                ManufacturerName = m.Manufacturer.Name,
+                TypeName = m.Type.Name,
+                Specifications = m.SpecificationsJson
+            });
+
+            return Ok(result);
         }
 
         private VerificationResultDto MapVerificationResult(OPZVerificationResult result)

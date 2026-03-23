@@ -87,13 +87,13 @@ const GenerateOPZPage: React.FC = () => {
     }
   };
 
-  const handleLoginRedirect = () => {
+  const handleRegisterRedirect = () => {
     // Save state before redirect
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
       selectedTypeId,
       selectedModelIds,
     }));
-    navigate('/login?returnTo=/generate');
+    navigate('/register?returnTo=/generate');
   };
 
   const handleEmailSubmit = async (email: string, marketingConsent: boolean) => {
@@ -288,10 +288,10 @@ const GenerateOPZPage: React.FC = () => {
                 </button>
               ) : (
                 <button
-                  onClick={handleLoginRedirect}
+                  onClick={handleRegisterRedirect}
                   className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
                 >
-                  Zaloguj się, aby zobaczyć pełny dokument
+                  Zarejestruj się, aby zobaczyć pełny dokument
                 </button>
               )}
             </div>
@@ -312,13 +312,13 @@ const GenerateOPZPage: React.FC = () => {
               </div>
               <div className="mt-4 p-4 bg-indigo-50 border border-indigo-200 rounded-xl text-center">
                 <p className="text-indigo-700 font-medium mb-2">
-                  Zaloguj się, aby zobaczyć i edytować pełny dokument OPZ
+                  Zarejestruj się, aby zobaczyć i edytować pełny dokument OPZ
                 </p>
                 <button
-                  onClick={handleLoginRedirect}
+                  onClick={handleRegisterRedirect}
                   className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
                 >
-                  Zaloguj się
+                  Zarejestruj się
                 </button>
               </div>
             </>
@@ -335,13 +335,36 @@ const GenerateOPZPage: React.FC = () => {
             </svg>
           </div>
           <h2 className="text-xl font-semibold text-gray-800 mb-2">Dokument OPZ jest gotowy</h2>
-          <p className="text-gray-500 mb-6">Kliknij przycisk poniżej, aby pobrać wygenerowany dokument w formacie PDF</p>
-          <button
-            onClick={handleDownload}
-            className="px-8 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors font-medium text-lg"
-          >
-            Pobierz PDF
-          </button>
+          <p className="text-gray-500 mb-6">Wybierz format pobierania dokumentu</p>
+          <div className="flex justify-center gap-4">
+            <button
+              onClick={handleDownload}
+              className="px-8 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors font-medium text-lg"
+            >
+              Pobierz PDF
+            </button>
+            {isAuthenticated && (
+              <button
+                onClick={async () => {
+                  if (!selectedType) return;
+                  try {
+                    const blob = await publicGeneratorAuthAPI.downloadDocx(selectedModelIds, selectedType.name);
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `OPZ_${selectedType.name}_${new Date().toISOString().slice(0, 10)}.docx`;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
+                  } catch { /* ignore */ }
+                }}
+                className="px-8 py-3 bg-green-600 text-white rounded-xl hover:bg-green-700 transition-colors font-medium text-lg"
+              >
+                Pobierz DOCX
+              </button>
+            )}
+          </div>
           <div className="mt-8 pt-6 border-t">
             <button
               onClick={() => {

@@ -388,6 +388,94 @@ Zwróć TYLKO tablicę JSON, bez żadnego tekstu przed ani po:
             return allRequirements;
         }
 
+        public async Task<List<LlmExtractedRequirement>> ExtractRequirementsFromTableTextAsync(string tableText)
+        {
+            try
+            {
+                var sanitizedText = SanitizeUserContent(tableText);
+
+                _logger.LogInformation("ExtractRequirementsFromTableText: table text length = {Length} chars", sanitizedText.Length);
+
+                // For very large table documents, chunk like the normal path
+                const int chunkThreshold = 120_000;
+                if (sanitizedText.Length > chunkThreshold)
+                {
+                    _logger.LogInformation("Table text exceeds {Threshold} chars, using chunked extraction", chunkThreshold);
+                    // Reuse the chunked approach but with the table-specific prompt
+                    const int chunkSize = 100_000;
+                    const int overlap = 5_000;
+                    var allRequirements = new List<LlmExtractedRequirement>();
+                    var chunkIndex = 0;
+
+                    for (int start = 0; start < sanitizedText.Length; start += chunkSize - overlap)
+                    {
+                        var end = Math.Min(start + chunkSize, sanitizedText.Length);
+                        var chunk = sanitizedText[start..end];
+                        chunkIndex++;
+                        var chunkRequirements = await ExtractRequirementsFromTableBlockAsync(chunk);
+                        allRequirements.AddRange(chunkRequirements);
+                        if (end >= sanitizedText.Length) break;
+                    }
+
+                    return allRequirements;
+                }
+
+                return await ExtractRequirementsFromTableBlockAsync(sanitizedText);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "LLM table requirement extraction failed, will use fallback");
+                return new List<LlmExtractedRequirement>();
+            }
+        }
+
+        private async Task<List<LlmExtractedRequirement>> ExtractRequirementsFromTableBlockAsync(string text)
+        {
+            var prompt = $@"Poniższy tekst został wyodrębniony z tabeli PDF i KOLUMNY MOGĄ BYĆ ZŁĄCZONE. Tekst pochodzi z tabeli wymagań OPZ (Opis Przedmiotu Zamówienia).
+
+TYPOWY FORMAT TABELI OPZ:
+- LP | Parametr/Cecha | Wymaganie minimalne | Wartość oferowana
+- Lub: Numer | Nazwa parametru | Opis wymagania
+- Kolumny mogą być oddzielone znakiem ""| "" lub wieloma spacjami
+
+WAŻNE ZASADY:
+- Każdy WIERSZ tabeli to osobne wymaganie (chyba że jest kontynuacją poprzedniego wiersza)
+- Pole ""device"" — nazwa urządzenia z nagłówka tabeli lub kontekstu (np. ""Serwer rack"", ""Macierz dyskowa"", ""Przełącznik sieciowy""). Jeśli nie da się ustalić, użyj ""Ogólne"".
+- Pole ""requirement"" — pełny opis wymagania, łączący nazwę parametru i wymaganie minimalne z danego wiersza
+- Zachowaj WSZYSTKIE wartości liczbowe i jednostki (GB, GHz, TB, szt., itp.)
+- Jeśli kolumny są złączone (brak separatora), użyj kontekstu do oddzielenia nazwy parametru od wartości
+- Kategorie: Technical (parametry sprzętowe), Performance (wydajność, benchmarki), Compliance (certyfikaty, normy), General (gwarancja, dostawa, serwis)
+- NIE pomijaj żadnych wierszy tabeli
+
+Zwróć TYLKO tablicę JSON:
+[
+  {{""device"": ""Serwer rack"", ""category"": ""Technical"", ""requirement"": ""Procesor: min. 2 procesory 16-rdzeniowe o częstotliwości min. 2.8 GHz"", ""specs"": {{""CPU"": ""min. 2x 16-core, 2.8GHz""}}}},
+  {{""device"": ""Serwer rack"", ""category"": ""Technical"", ""requirement"": ""Pamięć RAM: min. 768 GB DDR5 RDIMM"", ""specs"": {{""RAM"": ""768GB DDR5 RDIMM""}}}}
+]
+
+---BEGIN TABLE TEXT---
+{text}
+---END TABLE TEXT---";
+
+            var response = await _llmProvider.SendChatAsync(SystemPrompt, prompt, maxTokens: 16384, temperature: 0.3);
+
+            _logger.LogInformation("LLM ExtractRequirementsFromTableText response length: {Length} chars", response.Length);
+
+            var cleaned = StripMarkdownCodeBlock(response);
+
+            var jsonMatch = Regex.Match(cleaned, @"\[[\s\S]*\]");
+            if (!jsonMatch.Success)
+            {
+                _logger.LogWarning("LLM table response did not contain JSON array. First 500 chars: {Response}", cleaned.Length > 500 ? cleaned[..500] : cleaned);
+                return new List<LlmExtractedRequirement>();
+            }
+
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            var result = JsonSerializer.Deserialize<List<LlmExtractedRequirement>>(jsonMatch.Value, options);
+            _logger.LogInformation("LLM extracted {Count} requirements from table text", result?.Count ?? 0);
+            return result ?? new List<LlmExtractedRequirement>();
+        }
+
         public async Task<Dictionary<string, string>> ExtractEquipmentSpecsAsync(string documentText)
         {
             try
@@ -498,7 +586,11 @@ Zwróć TYLKO obiekt JSON:
                     return CreateFallbackDetailedResult(requirements);
                 }
 
-                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var options = new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+                };
                 var result = JsonSerializer.Deserialize<LlmDetailedMatchResult>(jsonMatch.Value, options);
                 return result ?? CreateFallbackDetailedResult(requirements);
             }
@@ -561,7 +653,11 @@ Zwróć TYLKO obiekt JSON:
                 if (!jsonMatch.Success)
                     return new LlmEquipmentMatchScore { Score = 0, Explanation = "Nie udało się ocenić zgodności." };
 
-                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var options = new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+                };
                 var result = JsonSerializer.Deserialize<LlmEquipmentMatchScore>(jsonMatch.Value, options);
                 return result ?? new LlmEquipmentMatchScore { Score = 0, Explanation = "Nie udało się ocenić zgodności." };
             }
@@ -570,6 +666,88 @@ Zwróć TYLKO obiekt JSON:
                 _logger.LogWarning(ex, "LLM equipment match scoring failed");
                 return new LlmEquipmentMatchScore { Score = 0, Explanation = "Błąd oceny zgodności przez AI." };
             }
+        }
+        public async Task<Dictionary<string, List<int>>> MatchDeviceCategoriesToEquipmentTypesAsync(
+            List<string> deviceCategories, List<EquipmentTypeInfo> equipmentTypes)
+        {
+            try
+            {
+                var categoriesList = string.Join("\n", deviceCategories.Select(c => $"  - \"{c}\""));
+                var typesList = string.Join("\n", equipmentTypes.Select(t => $"  - ID={t.Id}: \"{t.Name}\""));
+
+                var prompt = $@"Dopasuj kategorie urządzeń z dokumentu OPZ do typów sprzętu w bazie danych.
+
+KATEGORIE Z OPZ:
+{categoriesList}
+
+TYPY SPRZĘTU W BAZIE:
+{typesList}
+
+Dla każdej kategorii OPZ wskaż, które typy sprzętu z bazy mogą pasować.
+Odpowiedz TYLKO JSON w formacie:
+{{
+  ""mappings"": [
+    {{""category"": ""<kategoria OPZ>"", ""typeIds"": [<ID1>, <ID2>]}}
+  ]
+}}
+
+Zasady:
+- Dopasuj semantycznie (np. ""Serwer rack"" → ""Serwery"", ""Macierz dyskowa"" → ""Macierze dyskowe"")
+- Jeśli kategoria nie pasuje do żadnego typu, daj pustą listę typeIds: []
+- Kategoria ""Ogólne"" powinna pasować do WSZYSTKICH typów
+- Bądź dokładny — napęd taśmowy LTO to NIE jest serwer ani macierz";
+
+                var response = await _llmProvider.SendChatAsync(SystemPrompt, prompt, maxTokens: 2048, temperature: 0.1);
+                var cleaned = StripMarkdownCodeBlock(response);
+                var jsonMatch = Regex.Match(cleaned, @"\{[\s\S]*\}");
+
+                if (!jsonMatch.Success)
+                {
+                    _logger.LogWarning("LLM device-type mapping response did not contain JSON");
+                    return FallbackAllTypes(deviceCategories, equipmentTypes);
+                }
+
+                var options = new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+                };
+                var result = JsonSerializer.Deserialize<DeviceTypeMappingResult>(jsonMatch.Value, options);
+
+                if (result?.Mappings == null || result.Mappings.Count == 0)
+                    return FallbackAllTypes(deviceCategories, equipmentTypes);
+
+                var dict = new Dictionary<string, List<int>>();
+                foreach (var m in result.Mappings)
+                {
+                    // Validate that returned type IDs actually exist
+                    var validIds = m.TypeIds.Where(id => equipmentTypes.Any(t => t.Id == id)).ToList();
+                    dict[m.Category] = validIds;
+                }
+                return dict;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "LLM device-type mapping failed, falling back to all types");
+                return FallbackAllTypes(deviceCategories, equipmentTypes);
+            }
+        }
+
+        private static Dictionary<string, List<int>> FallbackAllTypes(List<string> categories, List<EquipmentTypeInfo> types)
+        {
+            var allIds = types.Select(t => t.Id).ToList();
+            return categories.ToDictionary(c => c, _ => allIds);
+        }
+
+        private class DeviceTypeMappingResult
+        {
+            public List<DeviceTypeMapping> Mappings { get; set; } = new();
+        }
+
+        private class DeviceTypeMapping
+        {
+            public string Category { get; set; } = string.Empty;
+            public List<int> TypeIds { get; set; } = new();
         }
     }
 }

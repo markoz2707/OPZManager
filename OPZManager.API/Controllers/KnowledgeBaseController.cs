@@ -87,6 +87,21 @@ namespace OPZManager.API.Controllers
             return Ok(new { message = "Ponowne przetwarzanie dokumentu zostało uruchomione." });
         }
 
+        [HttpPost("extract-specs")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<object>> ExtractSpecs(int modelId)
+        {
+            // Run in background since LLM call can be slow
+            _ = Task.Run(async () =>
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var service = scope.ServiceProvider.GetRequiredService<IKnowledgeBaseService>();
+                await service.ReExtractSpecsAsync(modelId);
+            });
+
+            return Ok(new { message = "Ekstrakcja specyfikacji z bazy wiedzy została uruchomiona." });
+        }
+
         [HttpPost("search")]
         public async Task<ActionResult<List<KnowledgeSearchResultDto>>> Search(int modelId, [FromBody] KnowledgeSearchRequestDto request)
         {

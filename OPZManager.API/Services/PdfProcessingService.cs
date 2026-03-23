@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using iText.Kernel.Pdf;
 using iText.Kernel.Pdf.Canvas.Parser;
+using iText.Kernel.Pdf.Canvas.Parser.Listener;
 using iText.Layout;
 using iText.Layout.Element;
 using iText.Layout.Properties;
@@ -38,7 +39,7 @@ namespace OPZManager.API.Services
                 for (int i = 1; i <= document.GetNumberOfPages(); i++)
                 {
                     var page = document.GetPage(i);
-                    text += PdfTextExtractor.GetTextFromPage(page);
+                    text += PdfTextExtractor.GetTextFromPage(page, new LocationTextExtractionStrategy());
                 }
 
                 return text;
@@ -86,11 +87,27 @@ namespace OPZManager.API.Services
             if (string.IsNullOrWhiteSpace(pdfText))
                 return new List<OPZRequirement>();
 
+            // Detect if this is table-heavy content
+            var tableConfidence = DetectTableContent(pdfText);
+            _logger.LogInformation("Table content confidence: {Confidence:F2} for {Length} chars", tableConfidence, pdfText.Length);
+
             // Try LLM structured extraction first
             try
             {
-                _logger.LogInformation("Attempting LLM structured requirement extraction for {Length} chars of PDF text", pdfText.Length);
-                var llmRequirements = await _pllumService.ExtractStructuredRequirementsAsync(pdfText);
+                List<LlmExtractedRequirement> llmRequirements;
+
+                if (tableConfidence > 0.6)
+                {
+                    _logger.LogInformation("Table-heavy document detected (confidence={Confidence:F2}), using table extraction pipeline", tableConfidence);
+                    var preprocessed = PreprocessTableText(pdfText);
+                    llmRequirements = await _pllumService.ExtractRequirementsFromTableTextAsync(preprocessed);
+                }
+                else
+                {
+                    _logger.LogInformation("Attempting LLM structured requirement extraction for {Length} chars of PDF text", pdfText.Length);
+                    llmRequirements = await _pllumService.ExtractStructuredRequirementsAsync(pdfText);
+                }
+
                 if (llmRequirements.Count >= 2)
                 {
                     _logger.LogInformation("LLM extracted {Count} structured requirements, using LLM results", llmRequirements.Count);
@@ -127,6 +144,145 @@ namespace OPZManager.API.Services
             _logger.LogInformation("Rule-based extracted {Count} requirements", requirements.Count);
 
             return requirements;
+        }
+
+        /// <summary>
+        /// Detects how table-heavy the document content is. Returns 0-1 confidence score.
+        /// </summary>
+        internal static double DetectTableContent(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return 0;
+
+            var lines = text.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+            if (lines.Length < 3)
+                return 0;
+
+            double score = 0;
+
+            // Heuristic 1: Lines with consistent tab/multi-space separators (table columns)
+            var multiSpaceLines = lines.Count(l => Regex.IsMatch(l, @"\S\s{2,}\S"));
+            var multiSpaceRatio = (double)multiSpaceLines / lines.Length;
+            if (multiSpaceRatio > 0.3) score += 0.2;
+
+            // Heuristic 2: Presence of "Lp." / "LP" / "L.p." as first column header
+            var hasLpHeader = lines.Any(l =>
+                Regex.IsMatch(l.TrimStart(), @"^(Lp\.?|LP\.?|L\.p\.?)\s", RegexOptions.IgnoreCase));
+            if (hasLpHeader) score += 0.15;
+
+            // Heuristic 3: Repeating numeric prefix patterns (numbered rows)
+            var numberedLines = lines.Count(l =>
+                Regex.IsMatch(l.TrimStart(), @"^\d{1,3}[\.\)]\s"));
+            var numberedRatio = (double)numberedLines / lines.Length;
+            if (numberedRatio > 0.15) score += 0.15;
+
+            // Heuristic 4: Short average line length (tables tend to have shorter lines)
+            var avgLineLength = lines.Average(l => l.Trim().Length);
+            if (avgLineLength < 80) score += 0.1;
+
+            // Heuristic 5: Low ratio of section headers (full OPZ docs have many headers)
+            var sectionHeaders = lines.Count(l =>
+            {
+                var lower = l.Trim().ToLower();
+                return lower.Contains("wymagania techniczne") || lower.Contains("specyfikacja techniczna") ||
+                       lower.Contains("opis przedmiotu") || lower.Contains("warunki gwarancji") ||
+                       lower.Contains("kryteria oceny") || lower.Contains("termin realizacji");
+            });
+            if (sectionHeaders <= 1) score += 0.1;
+
+            // Heuristic 6: High ratio of lines containing numbers with units
+            var unitLines = lines.Count(l =>
+                Regex.IsMatch(l, @"\d+\s*(GB|TB|GHz|MHz|MB|GbE|Gb/s|Gbit|IOPS|W|V|mm|kg|szt\.?|ms)", RegexOptions.IgnoreCase));
+            var unitRatio = (double)unitLines / lines.Length;
+            if (unitRatio > 0.15) score += 0.15;
+
+            // Heuristic 7: Common table header keywords
+            var hasTableHeaders = lines.Any(l =>
+            {
+                var lower = l.ToLower();
+                return (lower.Contains("parametr") && (lower.Contains("wymaganie") || lower.Contains("wartość") || lower.Contains("opis"))) ||
+                       (lower.Contains("nazwa") && lower.Contains("minimalne")) ||
+                       (lower.Contains("cecha") && lower.Contains("wymaganie"));
+            });
+            if (hasTableHeaders) score += 0.15;
+
+            return Math.Min(score, 1.0);
+        }
+
+        /// <summary>
+        /// Preprocesses table text by detecting column boundaries and inserting pipe separators.
+        /// </summary>
+        internal static string PreprocessTableText(string text)
+        {
+            var lines = text.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+            if (lines.Length < 3)
+                return text;
+
+            // Analyze character positions to find consistent whitespace gaps (column boundaries)
+            var gapPositions = new Dictionary<int, int>(); // position -> count of lines with gap at this position
+            foreach (var line in lines)
+            {
+                if (line.Length < 10) continue;
+
+                // Find positions where 2+ spaces appear
+                var match = Regex.Matches(line, @"(?<=\S)\s{2,}(?=\S)");
+                foreach (Match m in match)
+                {
+                    var midPos = m.Index + m.Length / 2;
+                    // Bucket positions to ±2 chars to handle slight misalignment
+                    var bucket = (midPos / 3) * 3;
+                    gapPositions.TryGetValue(bucket, out var count);
+                    gapPositions[bucket] = count + 1;
+                }
+            }
+
+            // Find column boundaries that appear in at least 20% of lines
+            var threshold = lines.Length * 0.2;
+            var columnBoundaries = gapPositions
+                .Where(kv => kv.Value >= threshold)
+                .Select(kv => kv.Key)
+                .OrderBy(x => x)
+                .ToList();
+
+            if (columnBoundaries.Count == 0)
+                return text; // No consistent columns found, return as-is
+
+            // Rebuild text with pipe separators
+            var result = new System.Text.StringBuilder();
+            foreach (var line in lines)
+            {
+                if (line.Trim().Length < 3)
+                {
+                    result.AppendLine(line);
+                    continue;
+                }
+
+                // Replace multi-space gaps at column boundaries with pipes
+                var processed = line;
+                var offset = 0;
+                foreach (var boundary in columnBoundaries)
+                {
+                    var adjustedPos = boundary + offset;
+                    if (adjustedPos >= processed.Length) continue;
+
+                    // Search ±4 chars around the boundary for a multi-space gap
+                    var searchStart = Math.Max(0, adjustedPos - 4);
+                    var searchEnd = Math.Min(processed.Length, adjustedPos + 5);
+                    var segment = processed[searchStart..searchEnd];
+                    var gapMatch = Regex.Match(segment, @"\s{2,}");
+                    if (gapMatch.Success)
+                    {
+                        var gapStart = searchStart + gapMatch.Index;
+                        var gapEnd = gapStart + gapMatch.Length;
+                        processed = processed[..gapStart] + " | " + processed[gapEnd..];
+                        offset += 3 - gapMatch.Length; // adjust for length change
+                    }
+                }
+
+                result.AppendLine(processed);
+            }
+
+            return result.ToString();
         }
 
         private async Task<List<OPZRequirement>> ExtractRequirementsWithAIAsync(string pdfText)

@@ -16,8 +16,11 @@ const navItems = [
 ];
 
 const adminItems = [
+  { to: '/admin/leads', label: 'Leady', icon: '📧' },
+  { to: '/admin/users', label: 'Użytkownicy', icon: '👥' },
   { to: '/admin/training', label: 'Dane treningowe', icon: '🧠' },
   { to: '/admin/config', label: 'Konfiguracja', icon: '⚡' },
+  { to: '/admin/llm-logs', label: 'Log LLM', icon: '📋' },
 ];
 
 const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {

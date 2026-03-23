@@ -10,6 +10,7 @@ namespace OPZManager.API.Services
         Task<bool> DeleteDocumentAsync(int documentId);
         Task ProcessDocumentAsync(int documentId);
         Task<List<KnowledgeSearchResult>> SearchAsync(int equipmentModelId, string query, int topK = 5);
+        Task<Dictionary<string, string>> ReExtractSpecsAsync(int equipmentModelId);
     }
 
     public class KnowledgeSearchResult
