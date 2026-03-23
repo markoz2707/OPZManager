@@ -15,11 +15,13 @@ namespace OPZManager.API.Controllers
     public class GeneratorController : ControllerBase
     {
         private readonly IOPZGenerationService _generationService;
+        private readonly IDocxExportService _docxExportService;
         private readonly ApplicationDbContext _context;
 
-        public GeneratorController(IOPZGenerationService generationService, ApplicationDbContext context)
+        public GeneratorController(IOPZGenerationService generationService, IDocxExportService docxExportService, ApplicationDbContext context)
         {
             _generationService = generationService;
+            _docxExportService = docxExportService;
             _context = context;
         }
 
@@ -43,6 +45,30 @@ namespace OPZManager.API.Controllers
         [HttpPost("pdf")]
         public async Task<IActionResult> GeneratePdf([FromBody] GenerateOPZPdfRequestDto request)
         {
+            var pdfBytes = await _generationService.GenerateOPZPdfAsync(request.Content, request.Title);
+            return File(pdfBytes, "application/pdf", $"OPZ_{DateTime.UtcNow:yyyyMMdd_HHmmss}.pdf");
+        }
+
+        [HttpPost("docx")]
+        public async Task<IActionResult> GenerateDocx([FromBody] GenerateOPZPdfRequestDto request)
+        {
+            var docxBytes = await _docxExportService.GenerateDocxAsync(request.Content, request.Title);
+            return File(docxBytes,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                $"OPZ_{DateTime.UtcNow:yyyyMMdd_HHmmss}.docx");
+        }
+
+        [HttpPost("export")]
+        public async Task<IActionResult> Export([FromBody] DTOs.Common.ExportRequestDto request)
+        {
+            if (string.Equals(request.Format, "docx", StringComparison.OrdinalIgnoreCase))
+            {
+                var docxBytes = await _docxExportService.GenerateDocxAsync(request.Content, request.Title);
+                return File(docxBytes,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    $"OPZ_{DateTime.UtcNow:yyyyMMdd_HHmmss}.docx");
+            }
+
             var pdfBytes = await _generationService.GenerateOPZPdfAsync(request.Content, request.Title);
             return File(pdfBytes, "application/pdf", $"OPZ_{DateTime.UtcNow:yyyyMMdd_HHmmss}.pdf");
         }

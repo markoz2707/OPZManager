@@ -24,6 +24,7 @@ namespace OPZManager.API.Controllers
         private readonly IEquipmentMatchingService _equipmentMatchingService;
         private readonly IOPZGenerationService _generationService;
         private readonly ILeadCaptureService _leadCaptureService;
+        private readonly IDocxExportService _docxExportService;
         private readonly IMapper _mapper;
         private readonly ILogger<PublicController> _logger;
 
@@ -34,6 +35,7 @@ namespace OPZManager.API.Controllers
             IEquipmentMatchingService equipmentMatchingService,
             IOPZGenerationService generationService,
             ILeadCaptureService leadCaptureService,
+            IDocxExportService docxExportService,
             IMapper mapper,
             ILogger<PublicController> logger)
         {
@@ -43,6 +45,7 @@ namespace OPZManager.API.Controllers
             _equipmentMatchingService = equipmentMatchingService;
             _generationService = generationService;
             _leadCaptureService = leadCaptureService;
+            _docxExportService = docxExportService;
             _mapper = mapper;
             _logger = logger;
         }
@@ -305,6 +308,42 @@ namespace OPZManager.API.Controllers
 
             var pdfBytes = await _generationService.GenerateOPZPdfAsync(request.Content, request.Title);
             return File(pdfBytes, "application/pdf", $"OPZ_{DateTime.UtcNow:yyyyMMdd_HHmmss}.pdf");
+        }
+
+        // POST api/public/generate/docx — requires JWT
+        [Authorize]
+        [HttpPost("generate/docx")]
+        public async Task<IActionResult> GenerateAuthorizedDocx([FromBody] GenerateOPZContentRequestDto request)
+        {
+            var equipmentModels = await _context.EquipmentModels
+                .Include(e => e.Manufacturer)
+                .Include(e => e.Type)
+                .Where(e => request.EquipmentModelIds.Contains(e.Id))
+                .ToListAsync();
+
+            if (!equipmentModels.Any())
+                return NotFound(new { message = "Nie znaleziono wybranych modeli sprzętu." });
+
+            var fullContent = await _generationService.GenerateOPZContentAsync(equipmentModels, request.EquipmentType);
+            var title = $"OPZ - {request.EquipmentType}";
+            var docxBytes = await _docxExportService.GenerateDocxAsync(fullContent, title);
+            return File(docxBytes,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                $"OPZ_{DateTime.UtcNow:yyyyMMdd_HHmmss}.docx");
+        }
+
+        // POST api/public/download/docx — requires lead capture token
+        [HttpPost("download/docx")]
+        public async Task<IActionResult> DownloadDocx([FromBody] DownloadRequestDto request)
+        {
+            var lead = await _leadCaptureService.ValidateDownloadTokenAsync(request.DownloadToken);
+            if (lead == null)
+                return Unauthorized(new { message = "Nieprawidłowy lub wygasły token pobierania. Podaj adres email ponownie." });
+
+            var docxBytes = await _docxExportService.GenerateDocxAsync(request.Content, request.Title);
+            return File(docxBytes,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                $"OPZ_{DateTime.UtcNow:yyyyMMdd_HHmmss}.docx");
         }
 
         // GET api/public/equipment/types

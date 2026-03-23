@@ -82,6 +82,7 @@ builder.Services.AddScoped<IOPZGenerationService, OPZGenerationService>();
 builder.Services.AddScoped<ITrainingDataService, TrainingDataService>();
 builder.Services.AddScoped<IOPZVerificationService, OPZVerificationService>();
 builder.Services.AddScoped<ILeadCaptureService, LeadCaptureService>();
+builder.Services.AddScoped<IDocxExportService, DocxExportService>();
 builder.Services.AddScoped<PythonPdfProcessingService>();
 builder.Services.AddScoped<IFolderImportService, FolderImportService>();
 
