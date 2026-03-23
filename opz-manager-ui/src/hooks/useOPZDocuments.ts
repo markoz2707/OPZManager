@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { opzAPI, OPZDocument, OPZDocumentDetail } from '../services/api';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { opzAPI, OPZDocument, OPZDocumentDetail, AnalysisProgress } from '../services/api';
 import toast from 'react-hot-toast';
 
 export function useOPZDocuments() {
@@ -36,6 +36,8 @@ export function useOPZDocuments() {
 export function useOPZDocument(id: number) {
   const [document, setDocument] = useState<OPZDocumentDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [analysisProgress, setAnalysisProgress] = useState<AnalysisProgress | null>(null);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchDocument = useCallback(async () => {
     try {
@@ -51,16 +53,77 @@ export function useOPZDocument(id: number) {
 
   useEffect(() => { fetchDocument(); }, [fetchDocument]);
 
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, []);
+
+  const startPolling = useCallback(() => {
+    if (pollingRef.current) clearInterval(pollingRef.current);
+    pollingRef.current = setInterval(async () => {
+      try {
+        const progress = await opzAPI.getAnalysisProgress(id);
+        setAnalysisProgress(progress);
+
+        if (progress.status === 'completed' || progress.status === 'error' || progress.status === 'cancelled') {
+          if (pollingRef.current) clearInterval(pollingRef.current);
+          pollingRef.current = null;
+
+          if (progress.status === 'completed') {
+            toast.success('Analiza zakończona');
+            fetchDocument();
+          } else if (progress.status === 'cancelled') {
+            toast.success('Analiza została anulowana');
+            fetchDocument();
+          } else {
+            toast.error(`Błąd analizy: ${progress.errorMessage}`);
+          }
+
+          // Clear progress after a short delay so user sees the final state
+          setTimeout(() => setAnalysisProgress(null), 3000);
+        }
+      } catch {
+        // Silently ignore polling errors
+      }
+    }, 2000);
+  }, [id, fetchDocument]);
+
   const analyze = async () => {
     try {
-      toast.loading('Analizowanie dokumentu...', { id: 'analyze' });
       await opzAPI.analyzeOPZ(id);
-      toast.success('Analiza zakończona', { id: 'analyze' });
-      fetchDocument();
+      setAnalysisProgress({
+        status: 'running',
+        totalEquipment: 0,
+        completedEquipment: 0,
+        currentEquipmentName: 'Przygotowywanie...',
+        percentage: 0
+      });
+      startPolling();
     } catch {
-      toast.error('Błąd podczas analizy', { id: 'analyze' });
+      toast.error('Błąd podczas uruchamiania analizy');
     }
   };
 
-  return { document, loading, refresh: fetchDocument, analyze };
+  const reprocess = async () => {
+    try {
+      toast.loading('Ponowne przetwarzanie wymagań...', { id: 'reprocess' });
+      const result = await opzAPI.reprocessOPZ(id);
+      toast.success(result.message, { id: 'reprocess' });
+      fetchDocument();
+    } catch {
+      toast.error('Błąd podczas ponownego przetwarzania', { id: 'reprocess' });
+    }
+  };
+
+  const cancelAnalysis = async () => {
+    try {
+      await opzAPI.cancelAnalysis(id);
+    } catch {
+      toast.error('Błąd podczas anulowania analizy');
+    }
+  };
+
+  return { document, loading, refresh: fetchDocument, analyze, reprocess, cancelAnalysis, analysisProgress };
 }

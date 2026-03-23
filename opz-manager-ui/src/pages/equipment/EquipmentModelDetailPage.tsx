@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { equipmentAPI, EquipmentModel, Manufacturer, EquipmentType } from '../../services/api';
+import { equipmentAPI, knowledgeBaseAPI, EquipmentModel, Manufacturer, EquipmentType } from '../../services/api';
 import { useKnowledgeBase } from '../../hooks/useKnowledgeBase';
 import { useAuth } from '../../hooks/useAuth';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
@@ -218,7 +218,26 @@ const EquipmentModelDetailPage: React.FC = () => {
           </>
         )}
 
-        <h2 className="text-lg font-semibold text-gray-900 mb-3">Specyfikacja techniczna</h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold text-gray-900">Specyfikacja techniczna</h2>
+          {isAdmin && documents.some(d => d.status === 'Zindeksowany') && (
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  toast.loading('Ekstrakcja specyfikacji z bazy wiedzy...', { id: 'extract-specs' });
+                  await knowledgeBaseAPI.extractSpecs(modelId);
+                  toast.success('Ekstrakcja uruchomiona. Odśwież stronę za chwilę.', { id: 'extract-specs' });
+                } catch {
+                  toast.error('Błąd ekstrakcji specyfikacji', { id: 'extract-specs' });
+                }
+              }}
+              className="px-3 py-1.5 text-xs font-medium bg-indigo-100 text-indigo-700 rounded-lg hover:bg-indigo-200 border border-indigo-200"
+            >
+              Wyodrębnij specyfikację z KB
+            </button>
+          )}
+        </div>
         {Object.keys(specs).length === 0 ? (
           <p className="text-gray-500">Brak specyfikacji</p>
         ) : (

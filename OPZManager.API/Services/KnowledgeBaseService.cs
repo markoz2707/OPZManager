@@ -282,5 +282,51 @@ namespace OPZManager.API.Services
 
             return results;
         }
+
+        public async Task<Dictionary<string, string>> ReExtractSpecsAsync(int equipmentModelId)
+        {
+            // Gather text from all indexed KB chunks for this equipment model
+            var chunks = await _context.KnowledgeChunks
+                .Include(c => c.KnowledgeDocument)
+                .Where(c => c.KnowledgeDocument.EquipmentModelId == equipmentModelId
+                         && c.KnowledgeDocument.Status == "Zindeksowany")
+                .OrderBy(c => c.KnowledgeDocumentId)
+                .ThenBy(c => c.ChunkIndex)
+                .Select(c => c.Content)
+                .ToListAsync();
+
+            if (chunks.Count == 0)
+                return new Dictionary<string, string>();
+
+            // Concatenate chunk text (limit to ~30K chars to stay within LLM limits)
+            var fullText = string.Join("\n", chunks);
+            if (fullText.Length > 30000)
+                fullText = fullText[..30000];
+
+            var extractedSpecs = await _pllumService.ExtractEquipmentSpecsAsync(fullText);
+
+            if (extractedSpecs.Count > 0)
+            {
+                var equipmentModel = await _context.EquipmentModels
+                    .FirstOrDefaultAsync(m => m.Id == equipmentModelId);
+
+                if (equipmentModel != null)
+                {
+                    var existingSpecs = equipmentModel.Specifications ?? new Dictionary<string, object>();
+                    foreach (var spec in extractedSpecs)
+                    {
+                        existingSpecs[spec.Key] = spec.Value;
+                    }
+                    equipmentModel.SpecificationsJson = System.Text.Json.JsonSerializer.Serialize(existingSpecs);
+                    equipmentModel.UpdatedAt = DateTime.UtcNow;
+                    await _context.SaveChangesAsync();
+
+                    _logger.LogInformation("Re-extracted and merged {Count} specs into EquipmentModel {ModelId}",
+                        extractedSpecs.Count, equipmentModelId);
+                }
+            }
+
+            return extractedSpecs;
+        }
     }
 }

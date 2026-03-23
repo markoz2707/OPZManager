@@ -5,7 +5,7 @@ namespace OPZManager.API.Services
     public interface IEquipmentMatchingService
     {
         // Equipment matching methods
-        Task<List<EquipmentMatch>> FindMatchingEquipmentAsync(OPZDocument opzDocument);
+        Task<List<EquipmentMatch>> FindMatchingEquipmentAsync(OPZDocument opzDocument, IAnalysisProgressService? progressService = null);
         Task<decimal> CalculateMatchScoreAsync(EquipmentModel equipment, List<OPZRequirement> requirements);
         Task<List<EquipmentModel>> GetEquipmentByManufacturerAsync(int manufacturerId);
         Task<List<EquipmentModel>> GetEquipmentByTypeAsync(int typeId);

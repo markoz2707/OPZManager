@@ -86,47 +86,31 @@ builder.Services.AddScoped<IDocxExportService, DocxExportService>();
 builder.Services.AddScoped<PythonPdfProcessingService>();
 builder.Services.AddScoped<IFolderImportService, FolderImportService>();
 
-// Configure LLM Provider based on settings
-var llmProvider = builder.Configuration["LlmSettings:Provider"] ?? "local";
-switch (llmProvider.ToLower())
-{
-    case "gemini":
-        builder.Services.AddHttpClient<ILlmProvider, GeminiProvider>();
-        break;
-    case "anthropic":
-        builder.Services.AddHttpClient<ILlmProvider, AnthropicProvider>();
-        break;
-    default: // "local"
-        builder.Services.AddHttpClient<ILlmProvider, LocalPllumProvider>(client =>
-        {
-            client.BaseAddress = new Uri(builder.Configuration["LlmSettings:Local:BaseUrl"]
-                ?? "http://localhost:1234/v1/");
-            client.DefaultRequestHeaders.Add("Accept", "application/json");
-        });
-        break;
-}
+// Register SystemConfigService
+builder.Services.AddScoped<ISystemConfigService, SystemConfigService>();
 
-// Configure Embedding Provider based on settings
-var embeddingProvider = builder.Configuration["EmbeddingSettings:Provider"] ?? "openai-compatible";
-switch (embeddingProvider.ToLower())
+// Register Analysis Progress tracking (singleton — shared across scopes)
+builder.Services.AddSingleton<IAnalysisProgressService, AnalysisProgressService>();
+
+// Register named HttpClients for provider factories
+builder.Services.AddHttpClient("LlmProvider", client =>
 {
-    case "gemini":
-        builder.Services.AddHttpClient<IEmbeddingProvider, GeminiEmbeddingProvider>();
-        break;
-    case "mistral":
-        builder.Services.AddHttpClient("EmbeddingProvider");
-        builder.Services.AddScoped<IEmbeddingProvider>(sp =>
-        {
-            var httpClient = sp.GetRequiredService<IHttpClientFactory>().CreateClient("EmbeddingProvider");
-            var config = sp.GetRequiredService<IConfiguration>();
-            var logger = sp.GetRequiredService<ILogger<OpenAICompatibleEmbeddingProvider>>();
-            return new OpenAICompatibleEmbeddingProvider(httpClient, config, logger, "Mistral");
-        });
-        break;
-    default: // "openai-compatible"
-        builder.Services.AddHttpClient<IEmbeddingProvider, OpenAICompatibleEmbeddingProvider>();
-        break;
-}
+    client.Timeout = TimeSpan.FromMinutes(5);
+});
+builder.Services.AddHttpClient("EmbeddingProvider");
+
+// Register provider factories and resolve providers per-request from DB config
+builder.Services.AddScoped<ILlmProviderFactory, LlmProviderFactory>();
+builder.Services.AddScoped<IEmbeddingProviderFactory, EmbeddingProviderFactory>();
+builder.Services.AddScoped<ILlmProvider>(sp =>
+{
+    var inner = sp.GetRequiredService<ILlmProviderFactory>().GetProvider();
+    return new LoggingLlmProviderDecorator(
+        inner,
+        sp.GetRequiredService<ApplicationDbContext>(),
+        sp.GetRequiredService<ILogger<LoggingLlmProviderDecorator>>());
+});
+builder.Services.AddScoped<IEmbeddingProvider>(sp => sp.GetRequiredService<IEmbeddingProviderFactory>().GetProvider());
 
 // Register document processing queue (singleton background service)
 builder.Services.AddSingleton<DocumentProcessingQueue>();
@@ -135,6 +119,15 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<DocumentProcessing
 
 // Register Knowledge Base service
 builder.Services.AddScoped<IKnowledgeBaseService, KnowledgeBaseService>();
+
+// Register DOCX Export service
+builder.Services.AddScoped<IDocxExportService, DocxExportService>();
+
+// Register Analytics service
+builder.Services.AddScoped<IAnalyticsService, AnalyticsService>();
+
+// Register SWZ Generation service
+builder.Services.AddScoped<ISWZGenerationService, SWZGenerationService>();
 
 // Register Folder Import service
 builder.Services.AddScoped<IFolderImportService, FolderImportService>();

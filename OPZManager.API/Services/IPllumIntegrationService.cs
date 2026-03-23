@@ -46,8 +46,16 @@ namespace OPZManager.API.Services
         Task<string> VerifyOPZContentAsync(string pdfText);
         Task<bool> TestConnectionAsync();
         Task<List<LlmExtractedRequirement>> ExtractStructuredRequirementsAsync(string pdfText);
+        Task<List<LlmExtractedRequirement>> ExtractRequirementsFromTableTextAsync(string tableText);
         Task<Dictionary<string, string>> ExtractEquipmentSpecsAsync(string documentText);
         Task<LlmEquipmentMatchScore> ScoreEquipmentMatchAsync(string requirements, string equipmentSpecs, string kbFragments);
         Task<LlmDetailedMatchResult> ScoreEquipmentMatchDetailedAsync(List<LlmRequirementInput> requirements, string equipmentSpecs, string kbFragments);
+        Task<Dictionary<string, List<int>>> MatchDeviceCategoriesToEquipmentTypesAsync(List<string> deviceCategories, List<EquipmentTypeInfo> equipmentTypes);
+    }
+
+    public class EquipmentTypeInfo
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = string.Empty;
     }
 }

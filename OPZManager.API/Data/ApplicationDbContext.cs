@@ -26,6 +26,8 @@ namespace OPZManager.API.Data
         public DbSet<KnowledgeDocument> KnowledgeDocuments { get; set; }
         public DbSet<KnowledgeChunk> KnowledgeChunks { get; set; }
         public DbSet<RequirementCompliance> RequirementCompliances { get; set; }
+        public DbSet<SystemSetting> SystemSettings { get; set; }
+        public DbSet<LlmLog> LlmLogs { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -220,6 +222,24 @@ namespace OPZManager.API.Data
                     .WithMany()
                     .HasForeignKey(e => e.RequirementId)
                     .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // SystemSetting configuration
+            modelBuilder.Entity<SystemSetting>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.Key).IsUnique();
+                entity.Property(e => e.Key).HasMaxLength(256);
+                entity.Property(e => e.Value).HasMaxLength(4096);
+                entity.Property(e => e.Category).HasMaxLength(64);
+            });
+
+            // LlmLog configuration
+            modelBuilder.Entity<LlmLog>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.Timestamp);
+                entity.HasIndex(e => e.CallerMethod);
             });
 
             // Seed data

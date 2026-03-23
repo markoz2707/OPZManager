@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useOPZDocument } from '../../hooks/useOPZDocuments';
-import { OPZRequirement, RequirementCompliance } from '../../services/api';
+import { OPZRequirement, RequirementCompliance, AnalysisProgress } from '../../services/api';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 
 /** Remove [Device] prefix from requirement text for display */
@@ -51,9 +51,93 @@ const ComplianceCell: React.FC<{ compliance: RequirementCompliance | undefined }
   );
 };
 
+/** Analysis progress banner */
+const AnalysisProgressBanner: React.FC<{ progress: AnalysisProgress; onCancel?: () => void }> = ({ progress, onCancel }) => {
+  const isRunning = progress.status === 'running';
+  const isError = progress.status === 'error';
+  const isCompleted = progress.status === 'completed';
+  const isCancelled = progress.status === 'cancelled';
+
+  if (!isRunning && !isError && !isCompleted && !isCancelled) return null;
+
+  return (
+    <div className={`rounded-lg border p-4 mb-4 ${
+      isError ? 'bg-red-50 border-red-200' :
+      isCompleted ? 'bg-green-50 border-green-200' :
+      isCancelled ? 'bg-amber-50 border-amber-200' :
+      'bg-indigo-50 border-indigo-200'
+    }`}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          {isRunning && (
+            <svg className="animate-spin h-4 w-4 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+            </svg>
+          )}
+          <span className={`text-sm font-semibold ${
+            isError ? 'text-red-800' :
+            isCompleted ? 'text-green-800' :
+            isCancelled ? 'text-amber-800' :
+            'text-indigo-800'
+          }`}>
+            {isError ? 'Analiza zakonczona bledem' :
+             isCompleted ? 'Analiza zakonczona' :
+             isCancelled ? 'Analiza anulowana' :
+             'Trwa analiza porownawcza...'}
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          {isRunning && progress.totalEquipment > 0 && (
+            <span className="text-sm font-bold text-indigo-700">
+              {progress.percentage}%
+            </span>
+          )}
+          {isRunning && onCancel && (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="px-3 py-1 text-xs font-medium text-red-700 bg-red-100 border border-red-300 rounded hover:bg-red-200"
+            >
+              Anuluj
+            </button>
+          )}
+        </div>
+      </div>
+
+      {isRunning && (
+        <>
+          {progress.totalEquipment > 0 && (
+            <div className="w-full bg-indigo-100 rounded-full h-2.5 mb-2">
+              <div
+                className="bg-indigo-600 h-2.5 rounded-full transition-all duration-500 ease-out"
+                style={{ width: `${progress.percentage}%` }}
+              />
+            </div>
+          )}
+          <div className="flex items-center justify-between text-xs text-indigo-600">
+            <span>
+              {progress.currentEquipmentName
+                ? <>Analizowanie: <strong>{progress.currentEquipmentName}</strong></>
+                : 'Przygotowywanie...'}
+            </span>
+            {progress.totalEquipment > 0 && (
+              <span>{progress.completedEquipment} / {progress.totalEquipment} modeli</span>
+            )}
+          </div>
+        </>
+      )}
+
+      {isError && progress.errorMessage && (
+        <p className="text-xs text-red-600 mt-1">{progress.errorMessage}</p>
+      )}
+    </div>
+  );
+};
+
 const OPZDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
-  const { document, loading, analyze } = useOPZDocument(Number(id));
+  const { document, loading, analyze, reprocess, cancelAnalysis, analysisProgress } = useOPZDocument(Number(id));
 
   // Group requirements by deviceCategory
   const groupedRequirements = useMemo(() => {
@@ -82,11 +166,12 @@ const OPZDetailPage: React.FC = () => {
   }, [document]);
 
   const hasMatches = (document?.matches?.length ?? 0) > 0;
+  const isAnalyzing = analysisProgress?.status === 'running';
 
   if (loading) return <LoadingSpinner message="Ładowanie dokumentu..." />;
   if (!document) return <p className="text-gray-500">Dokument nie został znaleziony.</p>;
 
-  const canAnalyze = document.analysisStatus !== 'Analizowanie';
+  const canAnalyze = document.analysisStatus !== 'Analizowanie' && !isAnalyzing;
 
   // Sort matches by score descending
   const sortedMatches = [...document.matches].sort((a, b) => b.matchScore - a.matchScore);
@@ -103,14 +188,26 @@ const OPZDetailPage: React.FC = () => {
             Wgrano: {new Date(document.uploadDate).toLocaleString('pl-PL')} | Status: {document.analysisStatus}
           </p>
         </div>
-        <button
-          onClick={analyze}
-          disabled={!canAnalyze}
-          className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50"
-        >
-          {document.analysisStatus === 'Analizowanie' ? 'Analizowanie...' : 'Analizuj dokument'}
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={reprocess}
+            disabled={isAnalyzing}
+            className="px-4 py-2 bg-amber-600 text-white text-sm font-medium rounded-lg hover:bg-amber-700 disabled:opacity-50"
+          >
+            Przetwórz ponownie
+          </button>
+          <button
+            onClick={analyze}
+            disabled={!canAnalyze}
+            className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {isAnalyzing ? 'Analizowanie...' : 'Analizuj dokument'}
+          </button>
+        </div>
       </div>
+
+      {/* Analysis Progress Banner */}
+      {analysisProgress && <AnalysisProgressBanner progress={analysisProgress} onCancel={cancelAnalysis} />}
 
       {/* Compliance Matrix Table */}
       <div className="mb-8">

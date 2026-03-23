@@ -19,17 +19,23 @@ namespace OPZManager.API.Controllers
         private readonly IEquipmentMatchingService _equipmentMatchingService;
         private readonly ApplicationDbContext _context;
         private readonly IMapper _mapper;
+        private readonly IServiceScopeFactory _scopeFactory;
+        private readonly IAnalysisProgressService _progressService;
 
         public OPZController(
             IPdfProcessingService pdfProcessingService,
             IEquipmentMatchingService equipmentMatchingService,
             ApplicationDbContext context,
-            IMapper mapper)
+            IMapper mapper,
+            IServiceScopeFactory scopeFactory,
+            IAnalysisProgressService progressService)
         {
             _pdfProcessingService = pdfProcessingService;
             _equipmentMatchingService = equipmentMatchingService;
             _context = context;
             _mapper = mapper;
+            _scopeFactory = scopeFactory;
+            _progressService = progressService;
         }
 
         [HttpPost("upload")]
@@ -120,29 +126,84 @@ namespace OPZManager.API.Controllers
             if (opzDocument == null)
                 throw new NotFoundException("OPZDocument", id);
 
+            // Check if already running
+            var existing = _progressService.GetProgress(id);
+            if (existing?.Status == "running")
+                return Ok(new { message = "Analiza już trwa.", status = "running" });
+
             opzDocument.AnalysisStatus = "Analizowanie";
             await _context.SaveChangesAsync();
 
-            try
+            // Fire-and-forget in background with a new DI scope
+            _ = Task.Run(async () =>
             {
-                var matches = await _equipmentMatchingService.FindMatchingEquipmentAsync(opzDocument);
+                using var scope = _scopeFactory.CreateScope();
+                var ctx = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var matchingService = scope.ServiceProvider.GetRequiredService<IEquipmentMatchingService>();
+                var progressService = scope.ServiceProvider.GetRequiredService<IAnalysisProgressService>();
 
-                opzDocument.AnalysisStatus = "Zakończono analizę";
-                await _context.SaveChangesAsync();
+                var doc = await ctx.OPZDocuments
+                    .Include(d => d.OPZRequirements)
+                    .FirstAsync(d => d.Id == id);
 
-                return Ok(new
+                try
                 {
-                    message = "Analiza zakończona pomyślnie.",
-                    matchesCount = matches.Count,
-                    matches = _mapper.Map<List<EquipmentMatchDto>>(matches)
-                });
-            }
-            catch
+                    await matchingService.FindMatchingEquipmentAsync(doc, progressService);
+                    progressService.Complete(id);
+                    doc.AnalysisStatus = "Zakończono analizę";
+                    await ctx.SaveChangesAsync();
+                }
+                catch (Exception ex)
+                {
+                    progressService.Fail(id, ex.Message);
+                    doc.AnalysisStatus = "Błąd analizy";
+                    await ctx.SaveChangesAsync();
+                }
+            });
+
+            return Accepted(new { message = "Analiza rozpoczęta.", status = "running" });
+        }
+
+        [HttpGet("{id}/analyze/progress")]
+        public ActionResult<object> GetAnalysisProgress(int id)
+        {
+            var progress = _progressService.GetProgress(id);
+            if (progress == null)
+                return Ok(new { status = "idle", totalEquipment = 0, completedEquipment = 0, currentEquipmentName = "", percentage = 0 });
+
+            var percentage = progress.TotalEquipment > 0
+                ? (int)Math.Round(100.0 * progress.CompletedEquipment / progress.TotalEquipment)
+                : 0;
+
+            return Ok(new
             {
-                opzDocument.AnalysisStatus = "Błąd analizy";
+                status = progress.Status,
+                totalEquipment = progress.TotalEquipment,
+                completedEquipment = progress.CompletedEquipment,
+                currentEquipmentName = progress.CurrentEquipmentName,
+                percentage,
+                errorMessage = progress.ErrorMessage
+            });
+        }
+
+        [HttpPost("{id}/analyze/cancel")]
+        public async Task<ActionResult<object>> CancelAnalysis(int id)
+        {
+            var progress = _progressService.GetProgress(id);
+            if (progress == null || progress.Status != "running")
+                return Ok(new { message = "Brak aktywnej analizy do anulowania." });
+
+            _progressService.Cancel(id);
+
+            // Update document status
+            var doc = await _context.OPZDocuments.FindAsync(id);
+            if (doc != null)
+            {
+                doc.AnalysisStatus = "Anulowano";
                 await _context.SaveChangesAsync();
-                throw;
             }
+
+            return Ok(new { message = "Analiza została anulowana.", status = "cancelled" });
         }
 
         [HttpGet("{id}/matches")]
@@ -159,6 +220,54 @@ namespace OPZManager.API.Controllers
                 .ToListAsync();
 
             return Ok(_mapper.Map<List<EquipmentMatchDto>>(matches));
+        }
+
+        [HttpPost("{id}/reprocess")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<object>> ReprocessOPZ(int id)
+        {
+            var opzDocument = await _context.OPZDocuments
+                .Include(d => d.OPZRequirements)
+                .FirstOrDefaultAsync(d => d.Id == id);
+
+            if (opzDocument == null)
+                throw new NotFoundException("OPZDocument", id);
+
+            if (!System.IO.File.Exists(opzDocument.FilePath))
+                return BadRequest(new { message = "Plik PDF nie istnieje na dysku. Nie można ponownie przetworzyć." });
+
+            // Remove old requirements and matches
+            _context.OPZRequirements.RemoveRange(opzDocument.OPZRequirements);
+
+            var oldMatches = await _context.EquipmentMatches
+                .Include(m => m.RequirementCompliances)
+                .Where(m => m.OPZId == id)
+                .ToListAsync();
+            foreach (var match in oldMatches)
+            {
+                _context.RequirementCompliances.RemoveRange(match.RequirementCompliances);
+            }
+            _context.EquipmentMatches.RemoveRange(oldMatches);
+            await _context.SaveChangesAsync();
+
+            // Re-extract requirements using current LLM
+            var pdfText = await _pdfProcessingService.ExtractTextFromPdfAsync(opzDocument.FilePath);
+            var requirements = await _pdfProcessingService.ExtractOPZRequirementsAsync(pdfText);
+
+            foreach (var requirement in requirements)
+            {
+                requirement.OPZId = opzDocument.Id;
+                _context.OPZRequirements.Add(requirement);
+            }
+
+            opzDocument.AnalysisStatus = "Przetworzony";
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                message = $"Ponowne przetworzenie zakończone. Wyodrębniono {requirements.Count} wymagań.",
+                requirementsCount = requirements.Count
+            });
         }
 
         [HttpDelete("{id}")]

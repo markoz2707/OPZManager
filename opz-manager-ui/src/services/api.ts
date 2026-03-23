@@ -41,6 +41,14 @@ export interface User {
   username: string;
   email: string;
   role: string;
+  fullName?: string;
+  company?: string;
+  position?: string;
+  phone?: string;
+  nip?: string;
+  address?: string;
+  marketingConsent?: boolean;
+  createdAt?: string;
 }
 
 export interface LoginRequest {
@@ -52,6 +60,13 @@ export interface RegisterRequest {
   username: string;
   email: string;
   password: string;
+  fullName: string;
+  company: string;
+  position?: string;
+  phone: string;
+  nip?: string;
+  address?: string;
+  marketingConsent: boolean;
   role?: string;
 }
 
@@ -119,6 +134,15 @@ export interface EquipmentMatch {
   complianceDescription: string;
   requirementCompliances: RequirementCompliance[];
   createdAt: string;
+}
+
+export interface AnalysisProgress {
+  status: 'idle' | 'running' | 'completed' | 'error' | 'cancelled';
+  totalEquipment: number;
+  completedEquipment: number;
+  currentEquipmentName: string;
+  percentage: number;
+  errorMessage?: string;
 }
 
 export interface OPZDocumentDetail {
@@ -197,6 +221,27 @@ export interface ConfigStatus {
   knowledgeChunksCount: number;
 }
 
+export interface LlmLogSummary {
+  id: number;
+  timestamp: string;
+  providerName: string;
+  modelName: string;
+  callerMethod: string;
+  durationMs: number;
+  success: boolean;
+  inputTokens: number | null;
+  outputTokens: number | null;
+}
+
+export interface LlmLogDetail extends LlmLogSummary {
+  systemPrompt: string;
+  userPrompt: string;
+  response: string;
+  errorMessage: string | null;
+  maxTokensRequested: number;
+  temperature: number;
+}
+
 export interface PaginatedResponse<T> {
   items: T[];
   totalCount: number;
@@ -214,9 +259,20 @@ export const authAPI = {
     const response = await api.post('/auth/login', credentials);
     return response.data;
   },
-  register: async (userData: RegisterRequest): Promise<{ message: string; user: User }> => {
+  register: async (userData: RegisterRequest): Promise<LoginResponse> => {
     const response = await api.post('/auth/register', userData);
     return response.data;
+  },
+  getProfile: async (): Promise<User> => {
+    const response = await api.get('/auth/me');
+    return response.data;
+  },
+  updateProfile: async (data: Partial<User>): Promise<User> => {
+    const response = await api.put('/auth/me', data);
+    return response.data;
+  },
+  deleteAccount: async (): Promise<void> => {
+    await api.delete('/auth/me');
   },
   logout: async (): Promise<void> => {
     await api.post('/auth/logout');
@@ -300,12 +356,24 @@ export const opzAPI = {
     const response = await api.get(`/opz/${id}`);
     return response.data;
   },
-  analyzeOPZ: async (id: number): Promise<{ message: string; matchesCount: number; matches: EquipmentMatch[] }> => {
+  analyzeOPZ: async (id: number): Promise<{ message: string; status: string }> => {
     const response = await api.post(`/opz/${id}/analyze`);
+    return response.data;
+  },
+  getAnalysisProgress: async (id: number): Promise<AnalysisProgress> => {
+    const response = await api.get(`/opz/${id}/analyze/progress`);
+    return response.data;
+  },
+  cancelAnalysis: async (id: number): Promise<{ message: string; status: string }> => {
+    const response = await api.post(`/opz/${id}/analyze/cancel`);
     return response.data;
   },
   getOPZMatches: async (id: number): Promise<EquipmentMatch[]> => {
     const response = await api.get(`/opz/${id}/matches`);
+    return response.data;
+  },
+  reprocessOPZ: async (id: number): Promise<{ message: string; requirementsCount: number }> => {
+    const response = await api.post(`/opz/${id}/reprocess`);
     return response.data;
   },
   deleteOPZ: async (id: number): Promise<void> => {
@@ -343,6 +411,10 @@ export const publicGeneratorAuthAPI = {
   },
   downloadPdf: async (equipmentModelIds: number[], equipmentType: string): Promise<Blob> => {
     const response = await api.post('/public/generate/pdf', { equipmentModelIds, equipmentType }, { responseType: 'blob' });
+    return response.data;
+  },
+  downloadDocx: async (equipmentModelIds: number[], equipmentType: string): Promise<Blob> => {
+    const response = await api.post('/public/generate/docx', { equipmentModelIds, equipmentType }, { responseType: 'blob' });
     return response.data;
   },
 };
@@ -400,21 +472,90 @@ export const knowledgeBaseAPI = {
     const response = await api.post(`/equipment/models/${modelId}/knowledge/search`, { query, topK });
     return response.data;
   },
+  extractSpecs: async (modelId: number): Promise<{ message: string }> => {
+    const response = await api.post(`/equipment/models/${modelId}/knowledge/extract-specs`);
+    return response.data;
+  },
 };
 
 // ─── Config API ──────────────────────────────────────────
+
+export interface LlmSettings {
+  provider: string;
+  baseUrl: string;
+  apiKey: string;
+  modelName: string;
+}
+
+export interface EmbeddingSettings {
+  provider: string;
+  baseUrl: string;
+  apiKey: string;
+  modelName: string;
+  dimensions: number;
+}
+
+export interface UpdateLlmSettingsRequest {
+  provider: string;
+  baseUrl?: string;
+  apiKey?: string;
+  modelName?: string;
+}
+
+export interface UpdateEmbeddingSettingsRequest {
+  provider: string;
+  baseUrl?: string;
+  apiKey?: string;
+  modelName?: string;
+  dimensions?: number;
+}
 
 export const configAPI = {
   getStatus: async (): Promise<ConfigStatus> => {
     const response = await api.get('/config/status');
     return response.data;
   },
-  testLlm: async (): Promise<{ connected: boolean; baseUrl: string; message: string }> => {
+  testLlm: async (): Promise<{ connected: boolean; provider: string; modelName: string; message: string }> => {
     const response = await api.get('/config/llm/test');
     return response.data;
   },
   testEmbedding: async (): Promise<{ connected: boolean; provider: string; modelName: string; dimensions: number; message: string }> => {
     const response = await api.get('/config/embedding/test');
+    return response.data;
+  },
+  getLlmSettings: async (): Promise<LlmSettings> => {
+    const response = await api.get('/config/llm/settings');
+    return response.data;
+  },
+  updateLlmSettings: async (data: UpdateLlmSettingsRequest): Promise<{ success: boolean; message: string }> => {
+    const response = await api.post('/config/llm', data);
+    return response.data;
+  },
+  getEmbeddingSettings: async (): Promise<EmbeddingSettings> => {
+    const response = await api.get('/config/embedding/settings');
+    return response.data;
+  },
+  updateEmbeddingSettings: async (data: UpdateEmbeddingSettingsRequest): Promise<{ success: boolean; message: string }> => {
+    const response = await api.post('/config/embedding', data);
+    return response.data;
+  },
+};
+
+export const llmLogsAPI = {
+  getLogs: async (params: {
+    page?: number; pageSize?: number;
+    status?: string; method?: string;
+    from?: string; to?: string;
+  }): Promise<{ items: LlmLogSummary[]; totalCount: number; page: number; pageSize: number }> => {
+    const response = await api.get('/config/llm-logs', { params });
+    return response.data;
+  },
+  getLogDetail: async (id: number): Promise<LlmLogDetail> => {
+    const response = await api.get(`/config/llm-logs/${id}`);
+    return response.data;
+  },
+  getMethods: async (): Promise<string[]> => {
+    const response = await api.get('/config/llm-logs/methods');
     return response.data;
   },
 };

@@ -27,7 +27,7 @@ namespace OPZManager.API.Services
             _logger = logger;
         }
 
-        public async Task<List<EquipmentMatch>> FindMatchingEquipmentAsync(OPZDocument opzDocument)
+        public async Task<List<EquipmentMatch>> FindMatchingEquipmentAsync(OPZDocument opzDocument, IAnalysisProgressService? progressService = null)
         {
             // Get OPZ requirements
             var requirements = await _context.OPZRequirements
@@ -57,18 +57,70 @@ namespace OPZManager.API.Services
 
             var requirementsText = string.Join("\n", requirements.Select(r => r.RequirementText));
 
-            // Get ALL equipment models (no type pre-filter — OPZ describes multiple device types)
+            // Pre-filter: map OPZ device categories to equipment types via LLM
+            var deviceCategories = requirementInputs
+                .Select(r => r.Device)
+                .Distinct()
+                .ToList();
+
+            var equipmentTypes = await _context.EquipmentTypes
+                .Select(t => new EquipmentTypeInfo { Id = t.Id, Name = t.Name })
+                .ToListAsync();
+
             var allEquipment = await _context.EquipmentModels
                 .Include(e => e.Manufacturer)
                 .Include(e => e.Type)
                 .ToListAsync();
 
+            // Ask LLM which equipment types match the OPZ device categories
+            HashSet<int> relevantTypeIds;
+            try
+            {
+                var mapping = await _pllumService.MatchDeviceCategoriesToEquipmentTypesAsync(deviceCategories, equipmentTypes);
+                relevantTypeIds = mapping.Values.SelectMany(ids => ids).ToHashSet();
+
+                // If "Ogólne" is present or mapping returned no IDs, include all types
+                if (relevantTypeIds.Count == 0 || deviceCategories.Contains("Ogólne"))
+                {
+                    relevantTypeIds = equipmentTypes.Select(t => t.Id).ToHashSet();
+                }
+
+                var skipped = allEquipment.Count(e => !relevantTypeIds.Contains(e.TypeId));
+                if (skipped > 0)
+                {
+                    _logger.LogInformation(
+                        "Pre-filter: OPZ categories [{Categories}] matched types [{Types}], skipping {Skipped} equipment models",
+                        string.Join(", ", deviceCategories),
+                        string.Join(", ", equipmentTypes.Where(t => relevantTypeIds.Contains(t.Id)).Select(t => t.Name)),
+                        skipped);
+                }
+
+                allEquipment = allEquipment.Where(e => relevantTypeIds.Contains(e.TypeId)).ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Equipment type pre-filtering failed, analyzing all models");
+            }
+
             var matches = new List<EquipmentMatch>();
 
+            // Report total count for progress tracking
+            progressService?.Start(opzDocument.Id, allEquipment.Count);
+
+            var completedCount = 0;
             foreach (var equipment in allEquipment)
             {
+                // Check for cancellation before each equipment
+                if (progressService?.IsCancelled(opzDocument.Id) == true)
+                {
+                    _logger.LogInformation("Analysis cancelled for OPZ {OPZId}", opzDocument.Id);
+                    break;
+                }
+
                 try
                 {
+                    var equipmentDisplayName = $"{equipment.Manufacturer.Name} {equipment.ModelName}";
+                    progressService?.Update(opzDocument.Id, completedCount, equipmentDisplayName);
                     // RAG search: find relevant KB fragments for this equipment
                     var kbFragments = new List<KnowledgeSearchResult>();
                     try
@@ -137,6 +189,10 @@ namespace OPZManager.API.Services
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "Failed to score equipment {ModelId} against OPZ {OPZId}", equipment.Id, opzDocument.Id);
+                }
+                finally
+                {
+                    completedCount++;
                 }
             }
 

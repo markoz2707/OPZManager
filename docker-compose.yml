@@ -29,15 +29,7 @@ services:
       ConnectionStrings__DefaultConnection: "Host=postgres;Database=${POSTGRES_DB:-opzdb};Username=${POSTGRES_USER:-opzuser};Password=${POSTGRES_PASSWORD:-opzpassword}"
       JwtSettings__SecretKey: ${JWT_SECRET_KEY:-YourSuperSecretKeyThatIsAtLeast32CharactersLong!}
       JwtSettings__ExpirationHours: ${JWT_EXPIRATION_HOURS:-24}
-      LlmSettings__Provider: ${LLM_PROVIDER:-local}
-      LlmSettings__Local__BaseUrl: ${LLM_LOCAL_BASE_URL:-https://api.mistral.ai/v1/}
-      LlmSettings__Local__ApiKey: ${LLM_LOCAL_API_KEY:-}
-      LlmSettings__Local__ModelName: ${LLM_LOCAL_MODEL_NAME:-mistral-large-2407}
-      EmbeddingSettings__Provider: ${EMBEDDING_PROVIDER:-mistral}
-      EmbeddingSettings__Mistral__BaseUrl: ${EMBEDDING_MISTRAL_BASE_URL:-https://api.mistral.ai/v1/}
-      EmbeddingSettings__Mistral__ApiKey: ${EMBEDDING_MISTRAL_API_KEY:-}
-      EmbeddingSettings__Mistral__ModelName: ${EMBEDDING_MISTRAL_MODEL_NAME:-mistral-embed}
-      EmbeddingSettings__Mistral__Dimensions: ${EMBEDDING_MISTRAL_DIMENSIONS:-1024}
+      # LLM and Embedding settings are managed via SystemConfigService (DB) + appsettings.json
       FileStorage__DocumentsPath: /data/documents
       FileStorage__OPZPath: /data/opz
       FileStorage__KnowledgeBasePath: /data/knowledge
